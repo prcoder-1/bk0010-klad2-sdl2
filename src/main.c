@@ -14,6 +14,7 @@
 
 #include "audio.h"
 #include "bk.h"
+#include "emt.h"
 #include "input.h"
 #include "pdp11.h"
 #include "video.h"
@@ -96,17 +97,6 @@ static void fill_demo_pattern(void)
     }
 }
 
-/* ---------------- Заглушка обработчика EMT для Фазы 2 --------------- */
-
-/* В Фазе 2 у нас ещё нет реализации EMT-вызовов — просто логируем
- * номер и продолжаем без эффекта (R0..R5, PSW не трогаем).
- * Полная реализация — Фаза 3 (src/emt.c). */
-static void emt_stub(unsigned emt_no)
-{
-    fprintf(stderr, "[Фаза 2] EMT %03o по PC=%06o — пока без обработки\n",
-            emt_no, (unsigned)cpu.r[7]);
-}
-
 /* ---------------- main ----------------------------------------------- */
 
 int main(int argc, char **argv)
@@ -148,7 +138,7 @@ int main(int argc, char **argv)
             video_shutdown(); input_shutdown(); audio_shutdown(); sdl_teardown();
             return EXIT_FAILURE;
         }
-        pdp11_set_emt_handler(emt_stub);
+        pdp11_set_emt_handler(emt_dispatch);
         pdp11_set_trace(trace);
         pdp11_reset(entry, INITIAL_SP);
         run_cpu = 1;

@@ -430,11 +430,27 @@ static void exec_one_op(uint16_t op)
         }
         psw_set(PSW_V, psw(PSW_N) ^ psw(PSW_C));
         break;
-    case 067: /* SXT — знакорасширение от N */
-        v = psw(PSW_N) ? 0xffffu : 0u;
-        write_op(dst_is_reg, sdst, v, 0);
-        psw_set(PSW_Z, !psw(PSW_N));
-        psw_set(PSW_V, 0);
+    case 064: /* MTPS (только byte_op=1): PSW.low ← src.byte.
+                 MARK (только byte_op=0) уже разобран отдельным хендлером,
+                 сюда попадает только байтовый вариант. */
+        v = read_op(dst_is_reg, sdst, 1);
+        cpu.psw = (uint16_t)((cpu.psw & 0xff00u) | (v & 0xffu));
+        break;
+    case 067:
+        if (byte_op) {
+            /* MFPS: dst.byte ← PSW.low; на регистр — знакорасширение. */
+            uint8_t pval = (uint8_t)(cpu.psw & 0xffu);
+            if (dst_is_reg) cpu.r[sdst] = (uint16_t)(int16_t)(int8_t)pval;
+            else            bk_write_b((uint16_t)sdst, pval);
+            set_nz_b(pval);
+            psw_set(PSW_V, 0);
+        } else {
+            /* SXT — знакорасширение от текущего N в dst. */
+            v = psw(PSW_N) ? 0xffffu : 0u;
+            write_op(dst_is_reg, sdst, v, 0);
+            psw_set(PSW_Z, !psw(PSW_N));
+            psw_set(PSW_V, 0);
+        }
         break;
     default:
         fprintf(stderr, "pdp11: неизвестная 1-операндная инструкция %06o "
@@ -735,11 +751,18 @@ int pdp11_step(void)
     /* JSR: 004xxx (bits 15..9 == 0o0040..0047 уже учли как top7=04). */
     if (top7 == 004) { exec_jsr(op); return 0; }
 
-    /* 1-операндные: 0050xx..0067xx (word) и 1050xx..1067xx (byte). */
+    /* 1-операндные:
+     *   0050xx..0063xx (word) и 1050xx..1063xx (byte) — CLR..ASL,
+     *   0067xx (word) — SXT,
+     *   1067xx (byte) — MFPS,
+     *   1064xx (byte) — MTPS (но не 0064xx, это MARK, разбирается ниже).
+     */
     {
         unsigned top9 = (op >> 6) & 01777u;
         unsigned base = top9 & 0777u;
-        if ((base >= 0050 && base <= 0063) || base == 0067) {
+        int byte_v = (op & 0100000u) != 0;
+        if ((base >= 0050 && base <= 0063) || base == 0067 ||
+            (byte_v && base == 0064)) {
             exec_one_op(op); return 0;
         }
     }
