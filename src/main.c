@@ -1,33 +1,46 @@
 /*
  * Главный модуль Linux/SDL2-порта КЛАД-2.
  *
- * Фаза 1: подключена «виртуальная БК» (bk_mem + перехват регистров),
- * видеорендер и заглушки ввода/звука. Чтобы было видно, что цепочка
- * `bk_mem[MEM_VIDEO] → SDL_Texture → окно` работает, в видеоОЗУ кладётся
- * тестовый паттерн (4 цветные вертикальные полосы + 1-пиксельная полоса
- * ниже для проверки порядка пикселей в байте).
+ * Если в аргументах указан путь к .BIN — загружаем образ в виртуальную
+ * БК, ставим PC на адрес загрузки и крутим интерпретатор PDP-11 между
+ * кадрами SDL2. Без аргумента — старый Фазы-1 демо-паттерн в видеоОЗУ
+ * (полезно для проверки видеоподсистемы изолированно).
  *
- * Окно — 256×256 (логически), целочисленный масштаб 2×.
- * Esc/SDL_QUIT — выход.
+ * Использование:
+ *   ./klad2 [--trace] [путь/к/BIN]
+ *
+ * Esc / SDL_QUIT — выход.
  */
 
 #include "audio.h"
 #include "bk.h"
 #include "input.h"
+#include "pdp11.h"
 #include "video.h"
 
 #include <SDL2/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 enum {
     BK_SCREEN_W   = 256,
     BK_SCREEN_H   = 256,
-    INITIAL_SCALE = 2
+    INITIAL_SCALE = 2,
+    /* Сколько инструкций крутим между кадрами. БК-0010 — ~3 МГц,
+     * среднее число тактов на инструкцию около 4–6, так что около
+     * 500 тыс. инструкций в секунду. При 50 FPS это ~10 тыс. в кадр.
+     * Подкрутим экспериментально, когда будет настоящая нагрузка. */
+    STEPS_PER_FRAME = 10000,
+    /* Начальное значение SP перед запуском .BIN. Верх пользовательского
+     * ОЗУ — прямо под видеобуфером MEM_VIDEO = 0o40000. */
+    INITIAL_SP = 0040000u - 2u
 };
 
 static SDL_Window   *g_window;
 static SDL_Renderer *g_renderer;
+
+/* ---------------- SDL setup/teardown --------------------------------- */
 
 static int sdl_setup(void)
 {
@@ -65,56 +78,86 @@ static void sdl_teardown(void)
     SDL_Quit();
 }
 
-/*
- * Тестовый паттерн в bk_mem[MEM_VIDEO]:
- *  - строки 0..127:  четыре вертикальных полосы цветов 0..3
- *    (по 16 байт = 64 пикселя каждая);
- *  - строки 128..255: байт 0xE4 = биты 11_10_01_00 — пиксели по 4 пикс/байт
- *    идут как чёрный/синий/зелёный/красный слева направо.
- * Если оба пояса смотрятся «как ожидалось» — палитра и LSB-first
- * упаковка пикселей корректны.
- */
+/* ---------------- Демо-паттерн Фазы 1 ------------------------------- */
+
 static void fill_demo_pattern(void)
 {
     uint8_t *vid = &bk_mem[MEM_VIDEO];
-
     for (int y = 0; y < SCREEN_PIX_HEIGHT / 2; y++) {
         uint8_t *row = &vid[y * SCREEN_BYTE_WIDTH];
         for (int xb = 0; xb < SCREEN_BYTE_WIDTH; xb++) {
-            /* 64 байта в строке делим на 4 равные полосы по 16 байт. */
             unsigned color = (unsigned)(xb / 16) & 0x3;
-            row[xb] = (uint8_t)(color * 0x55u); /* C|C<<2|C<<4|C<<6 */
+            row[xb] = (uint8_t)(color * 0x55u);
         }
     }
     for (int y = SCREEN_PIX_HEIGHT / 2; y < SCREEN_PIX_HEIGHT; y++) {
         uint8_t *row = &vid[y * SCREEN_BYTE_WIDTH];
-        for (int xb = 0; xb < SCREEN_BYTE_WIDTH; xb++) {
-            row[xb] = 0xE4u; /* 11 10 01 00 — пиксели 0..3 = ч/с/з/к */
-        }
+        for (int xb = 0; xb < SCREEN_BYTE_WIDTH; xb++) row[xb] = 0xE4u;
     }
 }
 
+/* ---------------- Заглушка обработчика EMT для Фазы 2 --------------- */
+
+/* В Фазе 2 у нас ещё нет реализации EMT-вызовов — просто логируем
+ * номер и продолжаем без эффекта (R0..R5, PSW не трогаем).
+ * Полная реализация — Фаза 3 (src/emt.c). */
+static void emt_stub(unsigned emt_no)
+{
+    fprintf(stderr, "[Фаза 2] EMT %03o по PC=%06o — пока без обработки\n",
+            emt_no, (unsigned)cpu.r[7]);
+}
+
+/* ---------------- main ----------------------------------------------- */
+
 int main(int argc, char **argv)
 {
-    (void)argc; (void)argv;
+    int trace = 0;
+    long max_steps = -1;
+    const char *bin_path = NULL;
 
-    if (sdl_setup() != 0) {
-        sdl_teardown();
-        return EXIT_FAILURE;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--trace") == 0) {
+            trace = 1;
+        } else if (strcmp(argv[i], "--max-steps") == 0 && i + 1 < argc) {
+            max_steps = strtol(argv[++i], NULL, 0);
+        } else if (argv[i][0] == '-') {
+            fprintf(stderr,
+                    "Неизвестный флаг: %s\n"
+                    "Использование: %s [--trace] [--max-steps N] [путь/к/BIN]\n",
+                    argv[i], argv[0]);
+            return EXIT_FAILURE;
+        } else {
+            bin_path = argv[i];
+        }
     }
+
+    if (sdl_setup() != 0) { sdl_teardown(); return EXIT_FAILURE; }
 
     bk_reset();
     if (audio_init() != 0 || input_init() != 0 ||
         video_init(g_renderer) != 0)
     {
-        video_shutdown();
-        input_shutdown();
-        audio_shutdown();
-        sdl_teardown();
+        video_shutdown(); input_shutdown(); audio_shutdown(); sdl_teardown();
         return EXIT_FAILURE;
     }
 
-    fill_demo_pattern();
+    int run_cpu = 0;
+    if (bin_path) {
+        uint16_t entry;
+        if (bk_load_bin(bin_path, &entry) != 0) {
+            video_shutdown(); input_shutdown(); audio_shutdown(); sdl_teardown();
+            return EXIT_FAILURE;
+        }
+        pdp11_set_emt_handler(emt_stub);
+        pdp11_set_trace(trace);
+        pdp11_reset(entry, INITIAL_SP);
+        run_cpu = 1;
+        fprintf(stderr,
+                "Загружен '%s': точка входа %06o, SP=%06o\n",
+                bin_path, entry, INITIAL_SP);
+    } else {
+        fill_demo_pattern();
+    }
 
     SDL_Event ev;
     int running = 1;
@@ -122,8 +165,7 @@ int main(int argc, char **argv)
         while (SDL_PollEvent(&ev)) {
             switch (ev.type) {
             case SDL_QUIT:
-                running = 0;
-                break;
+                running = 0; break;
             case SDL_KEYDOWN:
                 if (ev.key.keysym.sym == SDLK_ESCAPE) running = 0;
                 else input_handle_sdl_event(&ev);
@@ -133,13 +175,29 @@ int main(int argc, char **argv)
                 break;
             }
         }
+
+        if (run_cpu && !cpu.halted) {
+            int n = pdp11_run_n(STEPS_PER_FRAME);
+            if (max_steps > 0) {
+                max_steps -= n;
+                if (max_steps <= 0) {
+                    fprintf(stderr,
+                            "max-steps достигнут на PC=%06o\n",
+                            (unsigned)cpu.r[7]);
+                    cpu.halted = 1;
+                }
+            }
+            if (cpu.halted) {
+                fprintf(stderr,
+                        "ЦП остановлен (HALT/ошибка) на PC=%06o\n",
+                        (unsigned)cpu.r[7]);
+            }
+        }
+
         video_render_frame(g_renderer);
         SDL_RenderPresent(g_renderer);
     }
 
-    video_shutdown();
-    input_shutdown();
-    audio_shutdown();
-    sdl_teardown();
+    video_shutdown(); input_shutdown(); audio_shutdown(); sdl_teardown();
     return EXIT_SUCCESS;
 }

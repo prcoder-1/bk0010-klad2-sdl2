@@ -15,18 +15,27 @@ LDLIBS  := $(shell pkg-config --libs sdl2) -lm
 SRC_DIR := src
 BUILD   := build
 
-SRCS    := $(wildcard $(SRC_DIR)/*.c)
-OBJS    := $(patsubst $(SRC_DIR)/%.c,$(BUILD)/%.o,$(SRCS))
-DEPS    := $(OBJS:.o=.d)
+# Все .c в src/, кроме файлов test_*.c (у них своя main()).
+ALL_SRCS  := $(wildcard $(SRC_DIR)/*.c)
+TEST_SRCS := $(wildcard $(SRC_DIR)/test_*.c)
+APP_SRCS  := $(filter-out $(TEST_SRCS),$(ALL_SRCS))
 
-BIN     := klad2
+APP_OBJS  := $(patsubst $(SRC_DIR)/%.c,$(BUILD)/%.o,$(APP_SRCS))
+TEST_OBJS := $(patsubst $(SRC_DIR)/%.c,$(BUILD)/%.o,$(TEST_SRCS))
 
-.PHONY: all run clean
+DEPS      := $(APP_OBJS:.o=.d) $(TEST_OBJS:.o=.d)
+
+BIN       := klad2
+
+# Объекты для тест-бинарника — только не-SDL2-модули.
+TEST_DEPS := $(BUILD)/bk.o $(BUILD)/pdp11.o $(BUILD)/audio.o
+
+.PHONY: all run test clean
 
 all: $(BIN)
 
-$(BIN): $(OBJS)
-	$(CC) $(OBJS) -o $@ $(LDLIBS)
+$(BIN): $(APP_OBJS)
+	$(CC) $(APP_OBJS) -o $@ $(LDLIBS)
 
 $(BUILD)/%.o: $(SRC_DIR)/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
@@ -36,6 +45,13 @@ $(BUILD):
 
 run: $(BIN)
 	./$(BIN)
+
+# Бинарник тестов: один на каждый test_*.c.
+$(BUILD)/test_%: $(BUILD)/test_%.o $(TEST_DEPS)
+	$(CC) $^ -o $@ -lm
+
+test: $(patsubst $(BUILD)/%.o,$(BUILD)/%,$(TEST_OBJS))
+	@set -e; for t in $^; do echo "=== $$t ==="; ./$$t; done
 
 clean:
 	rm -rf $(BUILD) $(BIN)
