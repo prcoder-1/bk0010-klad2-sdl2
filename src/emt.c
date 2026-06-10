@@ -166,10 +166,18 @@ static void emt_016_putchar(void)
         return;
     /* Цвет переднего плана (GRAF.mac в исходниках БК-ROM-Бейсика,
      * подтверждено разделом 8.3.2.3 руководства БК-0010). */
-    case 0221: g_text_fg = 3; return; /* красный */
-    case 0222: g_text_fg = 2; return; /* зелёный */
-    case 0223: g_text_fg = 1; return; /* синий */
-    case 0224: g_text_fg = 0; return; /* чёрный (невидимый) */
+    case 0221: case 0222: case 0223: case 0224: {
+        static const char *names[] = {"чёрный","синий","зелёный","красный"};
+        unsigned new_fg = (ch == 0221) ? 3 :
+                          (ch == 0222) ? 2 :
+                          (ch == 0223) ? 1 : 0;
+        g_text_fg = new_fg;
+        if (getenv("KLAD2_EMT_LOG")) {
+            fprintf(stderr, "[EMT 016] цвет %03o → %s (fg=%u) в (%u,%u)\n",
+                    ch, names[new_fg], new_fg, g_cursor_x, g_cursor_y);
+        }
+        return;
+    }
     }
 
     const uint8_t *glyph = bk_font_glyph((uint8_t)ch);
