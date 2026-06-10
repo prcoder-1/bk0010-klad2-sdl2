@@ -85,9 +85,29 @@ void audio_shutdown(void)
     }
 }
 
+static unsigned g_toggle_count;
+
 void audio_speaker_set(int level)
 {
-    g_level = level ? AUDIO_AMPLITUDE : -AUDIO_AMPLITUDE;
+    int16_t new_level = level ? AUDIO_AMPLITUDE : -AUDIO_AMPLITUDE;
+    if (new_level != g_level) g_toggle_count++;
+    g_level = new_level;
+}
+
+/* Раз в секунду печатает сколько раз бит динамика щёлкнулся. КЛАД-2
+ * для звука выстрела/гибели должна давать заметную частоту (сотни
+ * переключений в секунду). Включается KLAD2_AUDIO_LOG. */
+static void audio_log_tick(void)
+{
+    static Uint32 last_tick;
+    if (!getenv("KLAD2_AUDIO_LOG")) return;
+    Uint32 now = SDL_GetTicks();
+    if (now - last_tick >= 1000) {
+        fprintf(stderr, "[audio] переключений за секунду: %u\n",
+                g_toggle_count);
+        g_toggle_count = 0;
+        last_tick = now;
+    }
 }
 
 void audio_step(void)
@@ -101,6 +121,7 @@ void audio_step(void)
 
 void audio_flush(void)
 {
+    audio_log_tick();
     if (!g_dev || g_buf_pos == 0) return;
     /* Защита от длительного отставания: если в очереди > 0.5 сек звука,
      * сбросим лишнее, чтобы не было «эха»/задержки при паузе.  */
