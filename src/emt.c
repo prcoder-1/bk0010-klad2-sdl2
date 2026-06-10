@@ -233,15 +233,27 @@ static void emt_020_puts(void)
     }
 
     int n = 0;
-    const int hard_limit = 512; /* предохранитель */
+    const int hard_limit = 1024; /* предохранитель */
     while (n < hard_limit) {
         uint8_t c = bk_read_b(p++);
         cpu.r[0] = (uint16_t)((cpu.r[0] & 0xff00u) | c);
         emt_016_putchar();
         n++;
-        if (c == 0) break;                       /* всегда стопим на 0 */
-        if (use_len && n >= max_len) break;      /* по длине */
-        if (use_dlm && c == delim) break;        /* по ограничителю */
+        /* Семантика EMT 020:
+         *   R2 = 0          → останавливаемся на нулевом байте (классика);
+         *   R2 != 0         → используем length+delim, нули в строке —
+         *                     это разделители БЛОКОВ внутри одной длинной
+         *                     строки данных, печать продолжается до явного
+         *                     ограничителя (max_len или delim). КЛАД-2
+         *                     именно так упаковывает текст меню — несколько
+         *                     блоков, разделённых null'ами, всё в одном
+         *                     буфере до символа 0o3 (КТ) в конце. */
+        if (!use_len && !use_dlm) {
+            if (c == 0) break;
+        } else {
+            if (use_len && n >= max_len) break;
+            if (use_dlm && c == delim) break;
+        }
     }
     cpu.r[1] = p;
 }
