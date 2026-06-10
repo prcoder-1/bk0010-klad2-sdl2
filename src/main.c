@@ -28,15 +28,18 @@ enum {
     BK_SCREEN_W   = 256,
     BK_SCREEN_H   = 256,
     INITIAL_SCALE = 2,
-    /* Сколько инструкций крутим между кадрами. БК-0010 — ~3 МГц,
-     * среднее число тактов на инструкцию около 4–6, так что около
-     * 500 тыс. инструкций в секунду. При 50 FPS это ~10 тыс. в кадр.
-     * Подкрутим экспериментально, когда будет настоящая нагрузка. */
-    STEPS_PER_FRAME = 10000,
     /* Начальное значение SP перед запуском .BIN. Верх пользовательского
      * ОЗУ — прямо под видеобуфером MEM_VIDEO = 0o40000. */
     INITIAL_SP = 0040000u - 2u
 };
+
+/* Сколько инструкций крутим между кадрами SDL2 (60 fps под VSYNC).
+ * По-хорошему БК-0010 на 3 МГц даёт ≈ 600 тыс. инструкций/с,
+ * т.е. ~10 тыс. на кадр при 60 fps. Но КЛАД-2 использует busy-loop
+ * задержки и оптимизировался под средний (~5 c/instr) PDP-11; при
+ * 10 000 инструкций/кадр геймплей идёт визуально быстрее оригинала,
+ * поэтому уменьшено по умолчанию до 5000. Регулируется флагом --speed N. */
+static int g_steps_per_frame = 5000;
 
 static SDL_Window   *g_window;
 static SDL_Renderer *g_renderer;
@@ -114,11 +117,14 @@ int main(int argc, char **argv)
             max_steps = strtol(argv[++i], NULL, 0);
         } else if (strcmp(argv[i], "--rom") == 0 && i + 1 < argc) {
             rom_path = argv[++i];
+        } else if (strcmp(argv[i], "--speed") == 0 && i + 1 < argc) {
+            g_steps_per_frame = (int)strtol(argv[++i], NULL, 0);
+            if (g_steps_per_frame < 100) g_steps_per_frame = 100;
         } else if (argv[i][0] == '-') {
             fprintf(stderr,
                     "Неизвестный флаг: %s\n"
                     "Использование: %s [--trace] [--max-steps N] "
-                    "[--rom path/to/mon.rom] [путь/к/BIN]\n",
+                    "[--rom path/to/mon.rom] [--speed N] [путь/к/BIN]\n",
                     argv[i], argv[0]);
             return EXIT_FAILURE;
         } else {
@@ -182,7 +188,7 @@ int main(int argc, char **argv)
         }
 
         if (run_cpu && !cpu.halted) {
-            int n = pdp11_run_n(STEPS_PER_FRAME);
+            int n = pdp11_run_n(g_steps_per_frame);
             bk_tick_timer((unsigned)n);
             if (max_steps > 0) {
                 max_steps -= n;

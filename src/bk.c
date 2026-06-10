@@ -24,7 +24,9 @@ uint8_t bk_mem[BK_MEM_SIZE];
 /* Загружается из bk10_017_mon.rom при старте, см. bk_load_rom_font().  */
 #define BK_FONT_ROM_OFFSET  0x141Eu
 #define BK_FONT_GLYPH_SIZE  10u
-#define BK_FONT_NUM_GLYPHS  192u  /* достаточно, чтобы покрыть оба диапазона */
+/* Максимальный индекс глифа: для кода 0o377 → idx = 0o377 - 0o60 = 0o317 = 207.
+ * Значит нужно 208 глифов × 10 байт = 2080 байт. */
+#define BK_FONT_NUM_GLYPHS  208u
 static uint8_t g_font[BK_FONT_NUM_GLYPHS * BK_FONT_GLYPH_SIZE];
 static int     g_font_loaded;
 
