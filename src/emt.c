@@ -110,29 +110,59 @@ static void emt_016_putchar(void)
 {
     unsigned ch = cpu.r[0] & 0xffu;
 
+    /* Управляющие коды БК-0010 по «Таблице 1. Коды символов»
+     * (руководство пользователя БК). */
     switch (ch) {
-    case 010: /* ВЛЕВО */
+    case 003: /* КТ — отказ от вводимой строки */                return;
+    case 007: /* СУ/G — звонок (нет аудио в EMT 016)         */  return;
+    case 010: /* ← курсор влево */
         if (g_cursor_x > 0) g_cursor_x--;
         return;
-    case 012: /* LF — курсор вниз с переносом в столбец 0 */
+    case 012: /* ┘ ВК — Enter (CR+LF) */
         g_cursor_x = 0;
         if (g_cursor_y < BK_TEXT_ROWS - 1) g_cursor_y++;
         return;
-    case 014: /* FF — очистка экрана + курсор домой */
+    case 014: /* СБР — очистка экрана + курсор домой */
         memset(&bk_mem[MEM_VIDEO], 0, 0x4000);
         g_cursor_x = g_cursor_y = 0;
         return;
-    case 015: /* CR — курсор в столбец 0, строка не меняется */
+    case 015: /* СУ/М — установка позиции табуляции (no-op) */    return;
+    case 016: /* РУС — переключение знаконабора (no-op) */        return;
+    case 017: /* ЛАТ — то же */                                   return;
+    case 020: /* СУ/P — сброс позиции табуляции */                return;
+    case 022: /* СУ/R — исходная установка курсора (cursor home) */
+        g_cursor_x = g_cursor_y = 0;
+        return;
+    case 023: /* ВС — возврат строки (CR) */
         g_cursor_x = 0;
         return;
-    case 027: /* стрелка вниз */
+    case 024: /* СУ/Т — курсор на 8 позиций вправо */
+        g_cursor_x = (g_cursor_x + 8 >= BK_TEXT_COLS)
+                     ? BK_TEXT_COLS - 1 : g_cursor_x + 8;
+        return;
+    case 025: /* СУ/U — перевод курсора в начало следующей строки */
+        g_cursor_x = 0;
         if (g_cursor_y < BK_TEXT_ROWS - 1) g_cursor_y++;
         return;
-    case 031: /* стрелка вправо */
+    case 026: /* Сдвижка в строке (insert — пока no-op) */       return;
+    case 027: /* Раздвижка в строке (push — пока no-op) */       return;
+    case 030: /* Забой — удалить символ перед курсором */
+        if (g_cursor_x > 0) g_cursor_x--;
+        /* В чисто текстовом режиме надо было бы стирать; на нашем
+         * пиксельном экране это бы потребовало рисовать пробел поверх,
+         * чего КЛАД-2 в gameplay-фазе не делает — оставим только сдвиг. */
+        return;
+    case 031: /* → курсор вправо */
         if (g_cursor_x < BK_TEXT_COLS - 1) g_cursor_x++;
         return;
-    case 032: /* стрелка вверх */
+    case 032: /* ↑ курсор вверх */
         if (g_cursor_y > 0) g_cursor_y--;
+        return;
+    case 033: /* ↓ курсор вниз */
+        if (g_cursor_y < BK_TEXT_ROWS - 1) g_cursor_y++;
+        return;
+    case 034: case 035: case 036: case 037:
+        /* Диагональные/прочие перемещения курсора — пока no-op. */
         return;
     /* Цвет переднего плана (GRAF.mac в исходниках БК-ROM-Бейсика,
      * подтверждено разделом 8.3.2.3 руководства БК-0010). */
@@ -140,9 +170,6 @@ static void emt_016_putchar(void)
     case 0222: g_text_fg = 2; return; /* зелёный */
     case 0223: g_text_fg = 1; return; /* синий */
     case 0224: g_text_fg = 0; return; /* чёрный (невидимый) */
-    /* Код 022 — служебный (раздел 8.3.2.2), без графики; КЛАД-2 шлёт
-     * его перед текстом меню, и на оригинале он невидим. */
-    case 022: return;
     }
 
     const uint8_t *glyph = bk_font_glyph((uint8_t)ch);
