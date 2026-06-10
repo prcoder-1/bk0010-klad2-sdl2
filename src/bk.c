@@ -148,14 +148,18 @@ static void on_write_ext_dev(uint16_t value)
     /* Бит 6 (EXT_DEV_MAG_KEY) — пьезодинамик. */
     audio_speaker_set((value >> EXT_DEV_MAG_KEY) & 1);
 
-    /* Диагностика: логируем первые 32 ЛЮБЫХ записи, плюс отметим все
-     * отличающиеся значения. */
+    /* Диагностика: логируем НЕнулевые записи (нули неинтересны — это
+     * фоновый CLR/инициализация). Плюс счётчики по битам. */
     if (getenv("KLAD2_AUDIO_LOG")) {
-        static unsigned any_count;
-        if (any_count < 32) {
+        static unsigned nonzero_count;
+        static unsigned bit_writes[8];
+        for (int b = 0; b < 8; b++) {
+            if (value & (1u << b)) bit_writes[b]++;
+        }
+        if (value != 0 && nonzero_count < 32) {
             fprintf(stderr,
-                    "[EXT_DEV] запись #%u %06o (бин %c%c%c%c %c%c%c%c)\n",
-                    any_count, value,
+                    "[EXT_DEV] не-нуль #%u %06o (бин %c%c%c%c %c%c%c%c)\n",
+                    nonzero_count, value,
                     (value & 0200) ? '1':'0',
                     (value & 0100) ? '1':'0',
                     (value & 0040) ? '1':'0',
@@ -164,8 +168,19 @@ static void on_write_ext_dev(uint16_t value)
                     (value & 0004) ? '1':'0',
                     (value & 0002) ? '1':'0',
                     (value & 0001) ? '1':'0');
+            nonzero_count++;
         }
-        any_count++;
+        /* Каждые 500 записей — кумулятивная картинка по битам. */
+        static unsigned total;
+        total++;
+        if (total % 500 == 0) {
+            fprintf(stderr,
+                    "[EXT_DEV] всего %u записей, '1' в битах: "
+                    "b0=%u b1=%u b2=%u b3=%u b4=%u b5=%u b6=%u b7=%u\n",
+                    total, bit_writes[0], bit_writes[1], bit_writes[2],
+                    bit_writes[3], bit_writes[4], bit_writes[5],
+                    bit_writes[6], bit_writes[7]);
+        }
     }
 }
 
