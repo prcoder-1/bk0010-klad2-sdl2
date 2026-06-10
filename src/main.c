@@ -27,6 +27,14 @@
 enum {
     BK_SCREEN_W   = 256,
     BK_SCREEN_H   = 256,
+    /* Аспект-коррекция: реальная БК показывала framebuffer 256×256 на
+     * 4:3-CRT, и пиксели были не квадратные — горизонтально они шире
+     * чем вертикально (256:192 = 4:3). Логическое разрешение для
+     * рендера = 256×192, чтобы все позиции по вертикали оказались
+     * относительно правильно — title-арт визуально короче, credit
+     * остаётся ниже него с естественным зазором. */
+    BK_DISPLAY_W  = 256,
+    BK_DISPLAY_H  = 192,
     INITIAL_SCALE = 2,
     /* Начальное значение SP перед запуском .BIN. Верх пользовательского
      * ОЗУ — прямо под видеобуфером MEM_VIDEO = 0o40000. */
@@ -58,7 +66,7 @@ static int sdl_setup(void)
     g_window = SDL_CreateWindow(
         "КЛАД-2",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        BK_SCREEN_W * INITIAL_SCALE, BK_SCREEN_H * INITIAL_SCALE,
+        BK_DISPLAY_W * INITIAL_SCALE, BK_DISPLAY_H * INITIAL_SCALE,
         SDL_WINDOW_RESIZABLE);
     if (!g_window) {
         fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());
@@ -72,7 +80,7 @@ static int sdl_setup(void)
         return -1;
     }
 
-    SDL_RenderSetLogicalSize(g_renderer, BK_SCREEN_W, BK_SCREEN_H);
+    SDL_RenderSetLogicalSize(g_renderer, BK_DISPLAY_W, BK_DISPLAY_H);
     SDL_RenderSetIntegerScale(g_renderer, SDL_TRUE);
     return 0;
 }
