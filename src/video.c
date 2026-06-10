@@ -50,12 +50,23 @@ void video_shutdown(void)
 
 static void unpack_video_to_rgba(uint32_t *dst, int dst_pitch_px)
 {
+    /* Применяем смещение из REG_V_SCROLL (поле ADDRESS, низкие 8 бит).
+     * Стандартное «исходное» значение БК = 0o330 = 216: framebuffer
+     * сдвигается так, что строка 40 fb попадает в display row 0
+     * (т.е. сверху появляется 40-пиксельная пустота, а контент
+     * сдвигается вниз). КЛАД-2 явно устанавливает это значение, и
+     * без учёта V_SCROLL у нас всё прилипает к верху экрана. */
+    unsigned v_scroll = (unsigned)bk_mem[REG_V_SCROLL]
+                      | ((unsigned)bk_mem[REG_V_SCROLL + 1] << 8);
+    unsigned address  = v_scroll & 0xffu;
+
     const uint8_t *src = &bk_mem[MEM_VIDEO];
 
     for (int y = 0; y < SCREEN_PIX_HEIGHT; y++) {
+        unsigned fb_y = ((unsigned)y + address) % 256u;
         uint32_t *row = dst + y * dst_pitch_px;
         for (int xb = 0; xb < SCREEN_BYTE_WIDTH; xb++) {
-            uint8_t b = src[y * SCREEN_BYTE_WIDTH + xb];
+            uint8_t b = src[fb_y * SCREEN_BYTE_WIDTH + xb];
             int px = xb * SCREEN_CLR_PX_PER_BYTE;
             /* LSB-first: пиксель 0 — биты 0..1, пиксель 3 — биты 6..7. */
             row[px + 0] = bk_palette_default[(b >> 0) & 0x3];
