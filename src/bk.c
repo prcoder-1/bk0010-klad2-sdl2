@@ -56,6 +56,26 @@ int bk_load_rom_font(const char *path)
     return 0;
 }
 
+int bk_load_rom_image(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "bk_load_rom_image: не могу открыть '%s': %s\n",
+                path, strerror(errno));
+        return -1;
+    }
+    /* Образ Monitor-ПЗУ БК-0010 = 8 КиБ, грузится в bk_mem[0o100000]. */
+    size_t n = fread(&bk_mem[MEM_ROM_MON], 1, 0x2000, f);
+    fclose(f);
+    if (n != 0x2000) {
+        fprintf(stderr,
+                "bk_load_rom_image: прочитано %zu байт из '%s' "
+                "(ожидалось 8192)\n", n, path);
+        return -1;
+    }
+    return 0;
+}
+
 const uint8_t *bk_font_glyph(uint8_t code)
 {
     if (!g_font_loaded) return NULL;

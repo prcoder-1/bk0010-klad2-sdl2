@@ -154,6 +154,17 @@ int main(int argc, char **argv)
         fprintf(stderr, "Шрифт БК загружен из %s\n", rom_path);
     }
 
+    /* Также загрузим полный образ Monitor-ПЗУ в bk_mem[0o100000..],
+     * чтобы КЛАД-2 могла вызывать ROM-функции напрямую через JSR
+     * (в частности, звуковой сигнал «плюканье клавиш»). */
+    if (bk_load_rom_image(rom_path) != 0) {
+        fprintf(stderr,
+                "Образ Monitor-ПЗУ не загружен — звуки выстрела/стен "
+                "могут отсутствовать.\n");
+    } else {
+        fprintf(stderr, "Образ Monitor-ПЗУ загружен в bk_mem[0o100000]\n");
+    }
+
     int run_cpu = 0;
     if (bin_path) {
         uint16_t entry;
