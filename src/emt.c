@@ -13,7 +13,6 @@
 #include "bk.h"
 #include "pdp11.h"
 
-#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -44,52 +43,96 @@ static void emt_014_init_rom_drivers(void)
     bk_mem[SYS_LAST_KEY_FLAG] = 0;
 }
 
+/* Раскладка экрана БК-0010 в цветном текстовом режиме (32 символа):
+ *   - 32 колонки × 25 строк; каждая ячейка 8 пикс × 10 строк;
+ *   - в каждом байте 4 пикселя (2 бита/пиксель), LSB-first;
+ *   - значит одна строка глифа занимает 2 байта видеоОЗУ;
+ *   - строка экрана = 64 байта, шаг строки символа = 64 × 10 = 640.
+ *
+ * Фон / цвет рисования — пока константа (передний = 3 «красный»,
+ * задний = 0 «чёрный»). Управляющие коды смены цвета 0o2xx из
+ * BK-ROM пока не интерпретируются; настоящая цветовая модель —
+ * следующий шаг, когда поймём, как КЛАД-2 их шлёт. */
+enum {
+    BK_TEXT_COLS = 32,
+    BK_TEXT_ROWS = 25,
+    BK_TEXT_FG   = 3, /* красный (в палитре по умолчанию) */
+    BK_TEXT_BG   = 0  /* чёрный */
+};
+
+static void draw_glyph_color(unsigned col, unsigned row, uint8_t code)
+{
+    const uint8_t *g = bk_font_glyph(code);
+    if (!g) return;
+    if (col >= BK_TEXT_COLS || row >= BK_TEXT_ROWS) return;
+
+    uint16_t base = (uint16_t)(MEM_VIDEO + row * 10u * 64u + col * 2u);
+    for (int r = 0; r < 10; r++) {
+        uint8_t fb = g[r];
+        uint8_t b0 = 0, b1 = 0;
+        /* Левые 4 пикселя — биты 0..3 шрифта → байт 0 экрана. */
+        for (int p = 0; p < 4; p++) {
+            unsigned c = ((fb >> p) & 1) ? BK_TEXT_FG : BK_TEXT_BG;
+            b0 |= (uint8_t)(c << (p * 2));
+        }
+        /* Правые 4 пикселя — биты 4..7 → байт 1 экрана. */
+        for (int p = 0; p < 4; p++) {
+            unsigned c = ((fb >> (p + 4)) & 1) ? BK_TEXT_FG : BK_TEXT_BG;
+            b1 |= (uint8_t)(c << (p * 2));
+        }
+        bk_mem[base + r * 64u + 0] = b0;
+        bk_mem[base + r * 64u + 1] = b1;
+    }
+}
+
 /* ---- EMT 016 — формирование символа / переключение режимов ------
- * R0 = код символа или управляющий код.
- * В реальной БК-ROM это сложный драйвер с десятками управляющих кодов
- * (переключение «32/64 символа в строке», цвет/моно, инверсия,
- * курсор, перевод строки, ГРАФ-режимы и т.д.). КЛАД-2, скорее всего,
- * использует EMT 016 для управляющих переключений, а сам gameplay
- * рисует спрайтами напрямую в видеоОЗУ. Поэтому здесь — частичный
- * стаб: учитываем только то, что критично для движения курсора,
- * прочее логируем как диагностику. */
+ * R0 = код символа или управляющий код. Управляющие — частично; для
+ * печатных глиф рисуется в текущей позиции курсора через шрифт БК.
+ * Управляющие коды смены цвета 0o2xx пока логируются — добавим, когда
+ * увидим, что именно КЛАД-2 шлёт. */
 static void emt_016_putchar(void)
 {
     unsigned ch = cpu.r[0] & 0xffu;
     switch (ch) {
     case 010: /* ВЛЕВО */
         if (g_cursor_x > 0) g_cursor_x--;
-        break;
+        return;
     case 012: /* ВК / перевод строки */
         g_cursor_x = 0;
-        if (g_cursor_y < 23) g_cursor_y++;
-        break;
+        if (g_cursor_y < BK_TEXT_ROWS - 1) g_cursor_y++;
+        return;
     case 014: /* ОЧИСТКА ЭКРАНА */
         memset(&bk_mem[MEM_VIDEO], 0, 0x4000);
         g_cursor_x = g_cursor_y = 0;
-        break;
+        return;
     case 015: /* ВОЗВРАТ КАРЕТКИ */
         g_cursor_x = 0;
-        break;
+        return;
     case 031: /* ВПРАВО */
         g_cursor_x++;
-        break;
+        return;
     case 032: /* ВВЕРХ */
         if (g_cursor_y > 0) g_cursor_y--;
-        break;
+        return;
     case 027: /* ВНИЗ */
-        g_cursor_y++;
-        break;
-    default:
-        if (isprint((int)ch)) {
-            fprintf(stderr, "[EMT 016] печать '%c' (%03o) в (%u,%u)\n",
-                    (int)ch, ch, g_cursor_x, g_cursor_y);
-            g_cursor_x++;
-        } else {
-            fprintf(stderr, "[EMT 016] управление %03o в (%u,%u)\n",
-                    ch, g_cursor_x, g_cursor_y);
+        if (g_cursor_y < BK_TEXT_ROWS - 1) g_cursor_y++;
+        return;
+    }
+
+    /* Печатный символ? */
+    const uint8_t *glyph = bk_font_glyph((uint8_t)ch);
+    if (glyph) {
+        draw_glyph_color(g_cursor_x, g_cursor_y, (uint8_t)ch);
+        g_cursor_x++;
+        if (g_cursor_x >= BK_TEXT_COLS) {
+            g_cursor_x = 0;
+            if (g_cursor_y < BK_TEXT_ROWS - 1) g_cursor_y++;
         }
-        break;
+    } else {
+        /* Управляющий код, который мы пока не понимаем (часто — смена
+         * цвета / режима). Логируем без падения. */
+        fprintf(stderr, "[EMT 016] управление %03o в (%u,%u)\n",
+                ch, g_cursor_x, g_cursor_y);
     }
 }
 

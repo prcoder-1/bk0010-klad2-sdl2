@@ -104,16 +104,21 @@ int main(int argc, char **argv)
     int trace = 0;
     long max_steps = -1;
     const char *bin_path = NULL;
+    const char *rom_path =
+        "/home/prcoder/emulators/БК-0010-01/bkemu/ROM/bk10_017_mon.rom";
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--trace") == 0) {
             trace = 1;
         } else if (strcmp(argv[i], "--max-steps") == 0 && i + 1 < argc) {
             max_steps = strtol(argv[++i], NULL, 0);
+        } else if (strcmp(argv[i], "--rom") == 0 && i + 1 < argc) {
+            rom_path = argv[++i];
         } else if (argv[i][0] == '-') {
             fprintf(stderr,
                     "Неизвестный флаг: %s\n"
-                    "Использование: %s [--trace] [--max-steps N] [путь/к/BIN]\n",
+                    "Использование: %s [--trace] [--max-steps N] "
+                    "[--rom path/to/mon.rom] [путь/к/BIN]\n",
                     argv[i], argv[0]);
             return EXIT_FAILURE;
         } else {
@@ -129,6 +134,16 @@ int main(int argc, char **argv)
     {
         video_shutdown(); input_shutdown(); audio_shutdown(); sdl_teardown();
         return EXIT_FAILURE;
+    }
+
+    /* Загрузим БК-шрифт из Monitor-ПЗУ, если он доступен. Без шрифта
+     * EMT 016 не рисует символы, но всё прочее работает. */
+    if (bk_load_rom_font(rom_path) != 0) {
+        fprintf(stderr,
+                "Шрифт БК недоступен (%s). EMT 016 будет молча "
+                "пропускать печатные символы.\n", rom_path);
+    } else {
+        fprintf(stderr, "Шрифт БК загружен из %s\n", rom_path);
     }
 
     int run_cpu = 0;

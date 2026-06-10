@@ -20,6 +20,57 @@
 
 uint8_t bk_mem[BK_MEM_SIZE];
 
+/* ----- Шрифт БК-Monitor 017 ------------------------------------------ */
+/* Загружается из bk10_017_mon.rom при старте, см. bk_load_rom_font().  */
+#define BK_FONT_ROM_OFFSET  0x141Eu
+#define BK_FONT_GLYPH_SIZE  10u
+#define BK_FONT_NUM_GLYPHS  192u  /* достаточно, чтобы покрыть оба диапазона */
+static uint8_t g_font[BK_FONT_NUM_GLYPHS * BK_FONT_GLYPH_SIZE];
+static int     g_font_loaded;
+
+int bk_load_rom_font(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "bk_load_rom_font: не могу открыть '%s': %s\n",
+                path, strerror(errno));
+        return -1;
+    }
+    if (fseek(f, BK_FONT_ROM_OFFSET, SEEK_SET) != 0) {
+        fprintf(stderr, "bk_load_rom_font: fseek в '%s': %s\n",
+                path, strerror(errno));
+        fclose(f);
+        return -1;
+    }
+    size_t n = fread(g_font, 1, sizeof g_font, f);
+    fclose(f);
+    if (n != sizeof g_font) {
+        fprintf(stderr,
+                "bk_load_rom_font: прочитано %zu байт вместо %zu из '%s'\n",
+                n, sizeof g_font, path);
+        return -1;
+    }
+    g_font_loaded = 1;
+    return 0;
+}
+
+const uint8_t *bk_font_glyph(uint8_t code)
+{
+    if (!g_font_loaded) return NULL;
+    /* Семантика из дизассемблера EMT 016 в BK-Monitor 017:
+     *  - коды 0..017     — управляющие, глифа нет;
+     *  - коды 020..0177  — печатные, индекс = code - 020;
+     *  - коды 0200..0237 — управляющие, глифа нет;
+     *  - коды 0240..0377 — печатные, индекс = code - 060. */
+    int idx;
+    if (code < 020)        return NULL;
+    else if (code < 0200)  idx = code - 020;
+    else if (code < 0240)  return NULL;
+    else                   idx = code - 060;
+    if ((unsigned)idx >= BK_FONT_NUM_GLYPHS) return NULL;
+    return &g_font[idx * BK_FONT_GLYPH_SIZE];
+}
+
 void bk_reset(void)
 {
     memset(bk_mem, 0, sizeof bk_mem);
