@@ -47,8 +47,17 @@ int input_init(void)
     /* Порт джойстика активно-высокий: все биты в 0 = ничего не нажато. */
     bk_mem[REG_PAR_INTERF]     = 0;
     bk_mem[REG_PAR_INTERF + 1] = 0;
+    /* MAG_KEY (бит 6 в REG_EXT_DEV) активно-низкий: 1 = клавиша
+     * НЕ нажата (исходное состояние БК). Без этого КЛАД-2 видит
+     * «всегда нажата какая-то клавиша» и зацикливается на reading
+     * REG_KEY_DATA = 0, интерпретируя как «продолжить движение». */
+    bk_mem[REG_EXT_DEV] = (uint8_t)(1u << EXT_DEV_MAG_KEY);
     return 0;
 }
+
+/* Считаем, сколько SDL-клавиш сейчас удерживается — нужно для
+ * корректного отслеживания состояния MAG_KEY. */
+static int g_keys_held;
 
 void input_shutdown(void) {}
 
@@ -96,6 +105,16 @@ int input_handle_sdl_event(const SDL_Event *ev)
 
     SDL_Keycode sym = ev->key.keysym.sym;
     int pressed = (ev->type == SDL_KEYDOWN);
+
+    /* 0. Счётчик удерживаемых клавиш + MAG_KEY-бит:
+     *    - есть хоть одна нажатая → MAG_KEY = 0 (активно-низкий)
+     *    - все отпущены           → MAG_KEY = 1
+     *    Игнорируем SDL2-repeat — это всё та же удерживаемая клавиша. */
+    if (pressed && !ev->key.repeat) g_keys_held++;
+    else if (!pressed && g_keys_held > 0) g_keys_held--;
+
+    if (g_keys_held > 0) bk_mem[REG_EXT_DEV] &= (uint8_t)~(1u << EXT_DEV_MAG_KEY);
+    else                 bk_mem[REG_EXT_DEV] |= (uint8_t)(1u << EXT_DEV_MAG_KEY);
 
     /* 1. Порт джойстика (REG_PAR_INTERF): держим состояние «нажата/
      *    отпущена» каждой клавиши в виде бита (активно-высокий).
