@@ -179,10 +179,21 @@ static void on_write_ext_dev(uint16_t value)
 
 /* ---------------- Чтение ---------------------------------------------- */
 
+static void log_ext_dev_read(uint16_t addr)
+{
+    if (!getenv("KLAD2_AUDIO_LOG")) return;
+    if ((addr & 0xFFFEu) != REG_EXT_DEV) return;
+    static unsigned reads;
+    reads++;
+    if (reads < 4 || reads % 200 == 0) {
+        fprintf(stderr, "[EXT_DEV] чтение #%u (значение %06o)\n",
+                reads, bk_mem[REG_EXT_DEV] | (bk_mem[REG_EXT_DEV+1] << 8));
+    }
+}
+
 uint8_t bk_read_b(uint16_t addr)
 {
-    /* Регистры периферии в Фазе 1 ведут себя как обычная RAM
-     * (значения подкладывают input.c и др. напрямую). */
+    log_ext_dev_read(addr);
     return bk_mem[addr];
 }
 
@@ -191,6 +202,7 @@ uint16_t bk_read_w(uint16_t addr)
     /* PDP-11 — little-endian; нечётное выравнивание словного доступа
      * округляем вниз (на железе был бы trap; контроль будет в Фазе 2). */
     addr &= 0xFFFEu;
+    log_ext_dev_read(addr);
     return (uint16_t)bk_mem[addr] | ((uint16_t)bk_mem[addr + 1] << 8);
 }
 
