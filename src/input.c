@@ -46,6 +46,14 @@ static uint8_t sdl_to_bk_code(SDL_Keycode sym, uint16_t mod)
     case SDLK_UP:        return 032;
     case SDLK_DOWN:      return 033;
     case SDLK_SPACE:     return 040;
+    /* РУС / ЛАТ — переключатели регистра БК; КЛАД-2 использует их
+     * как «стрельба влево» (РУС) и «стрельба вправо» (ЛАТ).
+     * Маплю на Shift (как наиболее естественную «модификаторную» клавишу
+     * современной клавиатуры); если не сработает — попробуем Ctrl. */
+    case SDLK_LSHIFT:    return 014; /* РУС */
+    case SDLK_RSHIFT:    return 017; /* ЛАТ */
+    case SDLK_LCTRL:     return 014; /* дубль РУС на Ctrl-l на случай */
+    case SDLK_RCTRL:     return 017; /* дубль ЛАТ на Ctrl-r */
     default: break;
     }
 
