@@ -145,8 +145,15 @@ void bk_tick_timer(unsigned cpu_steps)
 
 static void on_write_ext_dev(uint16_t value)
 {
-    /* Бит 6 (EXT_DEV_MAG_KEY) — пьезодинамик. */
-    audio_speaker_set((value >> EXT_DEV_MAG_KEY) & 1);
+    /* На реальной БК любая запись в REG_EXT_DEV генерирует короткий
+     * импульс (write-strobe) на пьезодинамике, независимо от значения
+     * бита MAG_KEY. КЛАД-2 этим пользуется: пишет CLR @#0o177716 в
+     * звуковых циклах, получая серию щелчков с заданной частотой.
+     * Поэтому переключаем уровень на КАЖДУЮ запись, а не только при
+     * смене бита 6 (исходный приближённый алгоритм). */
+    static int toggle_state;
+    toggle_state ^= 1;
+    audio_speaker_set(toggle_state);
 
     /* Диагностика: лог любой первой и каждой 50-й записи + бит-стат. */
     if (getenv("KLAD2_AUDIO_LOG")) {
