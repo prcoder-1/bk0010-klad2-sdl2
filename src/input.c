@@ -16,9 +16,11 @@
 #include "bk.h"
 
 /* Маппинг SDL-клавиш на биты порта параллельного интерфейса БК
- * (REG_PAR_INTERF = 0o177714, регистр активно-низкий: 1 — отпущено,
- * 0 — нажато). КЛАД-2 читает этот порт для «огонь пока удержан»,
- * движения и т.п. одновременно с REG_KEY_DATA. */
+ * (REG_PAR_INTERF = 0o177714, регистр активно-высокий: бит=1 — кнопка
+ * нажата, бит=0 — отпущена; подтверждено по digger-bk0010/digger.c:1994,
+ * который читает `port_state & (1<<PAR_INTERF_RIGHT_BUTTON)`).
+ * КЛАД-2 читает этот порт для «огонь пока удержан», движения и т.п.
+ * одновременно с REG_KEY_DATA. */
 static int par_bit_for_key(SDL_Keycode sym)
 {
     switch (sym) {
@@ -42,9 +44,9 @@ int input_init(void)
     bk_mem[REG_KEY_DATA + 1]  = 0;
     bk_mem[SYS_LAST_KEY]      = 0;
     bk_mem[SYS_LAST_KEY_FLAG] = 0;
-    /* Порт джойстика активно-низкий: все биты в 1 = ничего не нажато. */
-    bk_mem[REG_PAR_INTERF]     = 0xFF;
-    bk_mem[REG_PAR_INTERF + 1] = 0xFF;
+    /* Порт джойстика активно-высокий: все биты в 0 = ничего не нажато. */
+    bk_mem[REG_PAR_INTERF]     = 0;
+    bk_mem[REG_PAR_INTERF + 1] = 0;
     return 0;
 }
 
@@ -96,13 +98,13 @@ int input_handle_sdl_event(const SDL_Event *ev)
     int pressed = (ev->type == SDL_KEYDOWN);
 
     /* 1. Порт джойстика (REG_PAR_INTERF): держим состояние «нажата/
-     *    отпущена» каждой клавиши в виде бита (активно-низкий).
+     *    отпущена» каждой клавиши в виде бита (активно-высокий).
      *    КЛАД-2 использует именно этот регистр для «огонь пока
      *    удержан» и одновременного движения+стрельбы. */
     int bit = par_bit_for_key(sym);
     if (bit >= 0) {
-        if (pressed) bk_mem[REG_PAR_INTERF] &= (uint8_t)~(1u << bit);
-        else         bk_mem[REG_PAR_INTERF] |= (uint8_t)(1u << bit);
+        if (pressed) bk_mem[REG_PAR_INTERF] |= (uint8_t)(1u << bit);
+        else         bk_mem[REG_PAR_INTERF] &= (uint8_t)~(1u << bit);
     }
 
     /* 2. Регистр клавиатуры (REG_KEY_DATA) и SYS_LAST_KEY: используются
