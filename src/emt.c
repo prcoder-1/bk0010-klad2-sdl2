@@ -10,6 +10,7 @@
  */
 
 #include "emt.h"
+#include "audio.h"
 #include "bk.h"
 #include "pdp11.h"
 
@@ -114,8 +115,9 @@ static void emt_016_putchar(void)
      * (руководство пользователя БК). */
     switch (ch) {
     case 003: /* КТ — отказ от вводимой строки */                return;
-    case 007: /* СУ/G — звонок (BK ROM проигрывает короткий писк) */
-        fprintf(stderr, "[EMT 016] звонок (код 007) — пока no-op\n");
+    case 007: /* СУ/G — звонок: BK ROM проигрывает короткий «пиньк».
+                 КЛАД-2 шлёт его при выстреле и пробивании стен. */
+        audio_emit_bell();
         return;
     case 010: /* ← курсор влево */
         if (g_cursor_x > 0) g_cursor_x--;

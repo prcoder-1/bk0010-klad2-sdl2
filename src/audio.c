@@ -125,6 +125,37 @@ void audio_step(void)
     }
 }
 
+void audio_emit_bell(void)
+{
+    if (!g_dev) return;
+
+    /* Эмуляция ROM-«звонка» (EMT 016, код 007): короткий square-wave.
+     * Параметры подобраны под характерный «плюк» БК — около 30 мс,
+     * частота ~1500 Гц.  */
+    enum {
+        BELL_FREQ_HZ = 1500,
+        BELL_MS      = 30,
+        BELL_AMP     = 6000,  /* чуть тише чем write-strobe */
+    };
+    int samples     = AUDIO_SAMPLE_RATE * BELL_MS / 1000;
+    int half_period = AUDIO_SAMPLE_RATE / (2 * BELL_FREQ_HZ);
+
+    int16_t buf[2048];
+    if (samples > (int)(sizeof buf / sizeof buf[0])) {
+        samples = (int)(sizeof buf / sizeof buf[0]);
+    }
+    int16_t level = BELL_AMP;
+    int hp_count  = 0;
+    for (int i = 0; i < samples; i++) {
+        buf[i] = level;
+        if (++hp_count >= half_period) {
+            level = -level;
+            hp_count = 0;
+        }
+    }
+    SDL_QueueAudio(g_dev, buf, (Uint32)(samples * sizeof(int16_t)));
+}
+
 void audio_flush(void)
 {
     audio_log_tick();

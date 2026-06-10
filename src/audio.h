@@ -27,4 +27,10 @@ void audio_step(void);
  * изведения. */
 void audio_flush(void);
 
+/* Эмитировать короткий звуковой сигнал «пиньк» — это эмуляция ROM-
+ * процедуры BEL для EMT 016 с R0=7, которую КЛАД-2 использует для
+ * звука выстрела и пробивания стен. Прямой square-wave вброс в
+ * SDL-очередь. */
+void audio_emit_bell(void);
+
 #endif /* KLAD2_AUDIO_H */
