@@ -82,5 +82,9 @@ void video_render_frame(SDL_Renderer *renderer)
     SDL_UnlockTexture(g_screen_tex);
 
     SDL_RenderClear(renderer);
-    SDL_RenderCopy(renderer, g_screen_tex, NULL, NULL);
+    /* Обрезаем 32 пикселя сверху и снизу — это CRT-overscan, который
+     * скрывал крайние области экрана на физическом мониторе БК.
+     * Из 256-пиксельной текстуры показываем средние 192 строки. */
+    SDL_Rect src = {0, 32, 256, 192};
+    SDL_RenderCopy(renderer, g_screen_tex, &src, NULL);
 }
