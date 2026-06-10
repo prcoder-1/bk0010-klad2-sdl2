@@ -145,10 +145,33 @@ void bk_tick_timer(unsigned cpu_steps)
 
 static void on_write_ext_dev(uint16_t value)
 {
-    /* Бит 6 (EXT_DEV_MAG_KEY) — пьезодинамик. КЛАД-2 будет дёргать его
-     * как меандр; собственно генерация PCM — забота audio.c (Фаза 8),
-     * сейчас тут лишь nop-заглушка. */
+    /* Бит 6 (EXT_DEV_MAG_KEY) — пьезодинамик. */
     audio_speaker_set((value >> EXT_DEV_MAG_KEY) & 1);
+
+    /* Диагностика: логируем 16 первых отличающихся записей и периодически
+     * раз в секунду — какие биты меняются. Если КЛАД-2 для звука дёргает
+     * не бит 6 — увидим разницу значений. */
+    if (getenv("KLAD2_AUDIO_LOG")) {
+        static uint16_t last_value = 0;
+        static unsigned diff_count;
+        if (value != last_value) {
+            if (diff_count < 16) {
+                fprintf(stderr,
+                        "[EXT_DEV] запись %06o (бин %c%c%c%c %c%c%c%c)\n",
+                        value,
+                        (value & 0200) ? '1':'0',
+                        (value & 0100) ? '1':'0',
+                        (value & 0040) ? '1':'0',
+                        (value & 0020) ? '1':'0',
+                        (value & 0010) ? '1':'0',
+                        (value & 0004) ? '1':'0',
+                        (value & 0002) ? '1':'0',
+                        (value & 0001) ? '1':'0');
+            }
+            diff_count++;
+            last_value = value;
+        }
+    }
 }
 
 /* ---------------- Чтение ---------------------------------------------- */
