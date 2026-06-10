@@ -104,6 +104,19 @@ enum BK_EXT_DEV_BITS {
     EXT_DEV_RESET_VECT  = 8
 };
 
+/* ----- Биты регистра REG_PAR_INTERF (порт джойстика «Электроника») ---- */
+/* Регистр активно-низкий: 1 — клавиша/кнопка отпущена, 0 — нажата. */
+enum BK_PAR_INTERF_BITS {
+    PAR_INTERF_UP           = 0,
+    PAR_INTERF_RIGHT        = 1,
+    PAR_INTERF_DOWN         = 2,
+    PAR_INTERF_LEFT         = 3,
+    PAR_INTERF_A            = 4,
+    PAR_INTERF_LEFT_BUTTON  = 5,
+    PAR_INTERF_RIGHT_BUTTON = 6,
+    PAR_INTERF_B            = 7
+};
+
 /* ----- Биты регистра управления таймера ------------------------------- */
 enum BK_TVE_CSR_BITS {
     TVE_CSR_SP  = 0,

@@ -15,6 +15,25 @@
 #include "input.h"
 #include "bk.h"
 
+/* Маппинг SDL-клавиш на биты порта параллельного интерфейса БК
+ * (REG_PAR_INTERF = 0o177714, регистр активно-низкий: 1 — отпущено,
+ * 0 — нажато). КЛАД-2 читает этот порт для «огонь пока удержан»,
+ * движения и т.п. одновременно с REG_KEY_DATA. */
+static int par_bit_for_key(SDL_Keycode sym)
+{
+    switch (sym) {
+    case SDLK_UP:     return PAR_INTERF_UP;
+    case SDLK_RIGHT:  return PAR_INTERF_RIGHT;
+    case SDLK_DOWN:   return PAR_INTERF_DOWN;
+    case SDLK_LEFT:   return PAR_INTERF_LEFT;
+    case SDLK_LSHIFT:
+    case SDLK_LCTRL:  return PAR_INTERF_LEFT_BUTTON;
+    case SDLK_RSHIFT:
+    case SDLK_RCTRL:  return PAR_INTERF_RIGHT_BUTTON;
+    default: return -1;
+    }
+}
+
 int input_init(void)
 {
     bk_mem[REG_KEY_STATE]     = 0;
@@ -23,6 +42,9 @@ int input_init(void)
     bk_mem[REG_KEY_DATA + 1]  = 0;
     bk_mem[SYS_LAST_KEY]      = 0;
     bk_mem[SYS_LAST_KEY_FLAG] = 0;
+    /* Порт джойстика активно-низкий: все биты в 1 = ничего не нажато. */
+    bk_mem[REG_PAR_INTERF]     = 0xFF;
+    bk_mem[REG_PAR_INTERF + 1] = 0xFF;
     return 0;
 }
 
@@ -46,14 +68,15 @@ static uint8_t sdl_to_bk_code(SDL_Keycode sym, uint16_t mod)
     case SDLK_UP:        return 032;
     case SDLK_DOWN:      return 033;
     case SDLK_SPACE:     return 040;
-    /* РУС / ЛАТ — переключатели регистра БК; КЛАД-2 использует их
-     * как «стрельба влево» (РУС) и «стрельба вправо» (ЛАТ).
-     * Маплю на Shift (как наиболее естественную «модификаторную» клавишу
-     * современной клавиатуры); если не сработает — попробуем Ctrl. */
-    case SDLK_LSHIFT:    return 014; /* РУС */
-    case SDLK_RSHIFT:    return 017; /* ЛАТ */
-    case SDLK_LCTRL:     return 014; /* дубль РУС на Ctrl-l на случай */
-    case SDLK_RCTRL:     return 017; /* дубль ЛАТ на Ctrl-r */
+    /* РУС / ЛАТ — переключатели регистра БК; КЛАД-2 в меню правил
+     * использует их как «стрельба влево» (РУС) и «стрельба вправо»
+     * (ЛАТ). По соглашению ASCII control-codes РУС соответствует SO
+     * (Shift Out, 0o16), ЛАТ — SI (Shift In, 0o17). Маплю на оба
+     * Shift и оба Ctrl: чем больше клавиш, тем удобнее. */
+    case SDLK_LSHIFT:    return 016; /* РУС → стрельба влево */
+    case SDLK_RSHIFT:    return 017; /* ЛАТ → стрельба вправо */
+    case SDLK_LCTRL:     return 016; /* дубль РУС */
+    case SDLK_RCTRL:     return 017; /* дубль ЛАТ */
     default: break;
     }
 
@@ -67,15 +90,41 @@ static uint8_t sdl_to_bk_code(SDL_Keycode sym, uint16_t mod)
 
 int input_handle_sdl_event(const SDL_Event *ev)
 {
-    if (ev->type != SDL_KEYDOWN) return 0;
+    if (ev->type != SDL_KEYDOWN && ev->type != SDL_KEYUP) return 0;
 
-    uint8_t code = sdl_to_bk_code(ev->key.keysym.sym, ev->key.keysym.mod);
-    if (!code) return 0;
+    SDL_Keycode sym = ev->key.keysym.sym;
+    int pressed = (ev->type == SDL_KEYDOWN);
 
-    bk_mem[REG_KEY_DATA]      = code;
-    bk_mem[SYS_LAST_KEY]      = code;
-    bk_mem[SYS_LAST_KEY_FLAG] = 1;
-    bk_mem[REG_KEY_STATE]    |= (uint8_t)(1u << KEY_STATE_STATE);
+    /* 1. Порт джойстика (REG_PAR_INTERF): держим состояние «нажата/
+     *    отпущена» каждой клавиши в виде бита (активно-низкий).
+     *    КЛАД-2 использует именно этот регистр для «огонь пока
+     *    удержан» и одновременного движения+стрельбы. */
+    int bit = par_bit_for_key(sym);
+    if (bit >= 0) {
+        if (pressed) bk_mem[REG_PAR_INTERF] &= (uint8_t)~(1u << bit);
+        else         bk_mem[REG_PAR_INTERF] |= (uint8_t)(1u << bit);
+    }
+
+    /* 2. Регистр клавиатуры (REG_KEY_DATA) и SYS_LAST_KEY: используются
+     *    для текстового ввода в меню. Игнорируем SDL2 auto-repeat —
+     *    в БК клавиатура не повторяет код без клавиши ПОВТ. */
+    if (pressed && !ev->key.repeat) {
+        uint8_t code = sdl_to_bk_code(sym, ev->key.keysym.mod);
+        if (code) {
+            bk_mem[REG_KEY_DATA]      = code;
+            bk_mem[SYS_LAST_KEY]      = code;
+            bk_mem[SYS_LAST_KEY_FLAG] = 1;
+            bk_mem[REG_KEY_STATE]    |= (uint8_t)(1u << KEY_STATE_STATE);
+        }
+    } else if (!pressed) {
+        uint8_t code = sdl_to_bk_code(sym, 0);
+        if (code && bk_mem[REG_KEY_DATA] == code) {
+            bk_mem[REG_KEY_DATA]      = 0;
+            bk_mem[SYS_LAST_KEY]      = 0;
+            bk_mem[SYS_LAST_KEY_FLAG] = 0;
+            bk_mem[REG_KEY_STATE]    &= (uint8_t)~(1u << KEY_STATE_STATE);
+        }
+    }
 
     return 0;
 }
