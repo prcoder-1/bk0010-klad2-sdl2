@@ -85,26 +85,32 @@ void audio_shutdown(void)
     }
 }
 
-static unsigned g_toggle_count;
+static unsigned g_write_count;   /* любые записи в EXT_DEV.MAG_KEY */
+static unsigned g_toggle_count;  /* только смены уровня */
 
 void audio_speaker_set(int level)
 {
     int16_t new_level = level ? AUDIO_AMPLITUDE : -AUDIO_AMPLITUDE;
+    g_write_count++;
     if (new_level != g_level) g_toggle_count++;
     g_level = new_level;
 }
 
-/* Раз в секунду печатает сколько раз бит динамика щёлкнулся. КЛАД-2
- * для звука выстрела/гибели должна давать заметную частоту (сотни
- * переключений в секунду). Включается KLAD2_AUDIO_LOG. */
+/* Раз в секунду печатает счётчики:
+ *   write   — все записи в EXT_DEV (даже с тем же значением);
+ *   toggle  — только реальные переходы 0↔1.
+ * Если КЛАД-2 для звука действительно тикает динамик, оба счётчика
+ * должны расти. Если оба 0 — КЛАД-2 вообще не пишет в EXT_DEV
+ * во время игры. */
 static void audio_log_tick(void)
 {
     static Uint32 last_tick;
     if (!getenv("KLAD2_AUDIO_LOG")) return;
     Uint32 now = SDL_GetTicks();
     if (now - last_tick >= 1000) {
-        fprintf(stderr, "[audio] переключений за секунду: %u\n",
-                g_toggle_count);
+        fprintf(stderr, "[audio] write=%u toggle=%u за секунду\n",
+                g_write_count, g_toggle_count);
+        g_write_count = 0;
         g_toggle_count = 0;
         last_tick = now;
     }

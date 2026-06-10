@@ -114,7 +114,9 @@ static void emt_016_putchar(void)
      * (руководство пользователя БК). */
     switch (ch) {
     case 003: /* КТ — отказ от вводимой строки */                return;
-    case 007: /* СУ/G — звонок (нет аудио в EMT 016)         */  return;
+    case 007: /* СУ/G — звонок (BK ROM проигрывает короткий писк) */
+        fprintf(stderr, "[EMT 016] звонок (код 007) — пока no-op\n");
+        return;
     case 010: /* ← курсор влево */
         if (g_cursor_x > 0) g_cursor_x--;
         return;
