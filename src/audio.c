@@ -129,13 +129,17 @@ void audio_emit_bell(void)
 {
     if (!g_dev) return;
 
-    /* Эмуляция ROM-«звонка» (EMT 016, код 007): короткий square-wave.
-     * Параметры подобраны под характерный «плюк» БК — около 30 мс,
-     * частота ~1500 Гц.  */
+    /* Эмуляция «плик» — звука нажатия клавиш БК-0010. На реальной БК
+     * этот звук генерируется ROM-процедурой, которая делает короткую
+     * серию write-strobe в REG_EXT_DEV — пьезодинамик щёлкает.
+     * Звук очень короткий (5-10 мс), высокочастотный (~3 кГц),
+     * с быстрым затуханием — типичное «тиньк» / «плик».
+     *
+     * Сэмулируем: square wave 3 кГц длиной 8 мс с линейным fade-out. */
     enum {
-        BELL_FREQ_HZ = 1500,
-        BELL_MS      = 30,
-        BELL_AMP     = 6000,  /* чуть тише чем write-strobe */
+        BELL_FREQ_HZ = 3000,
+        BELL_MS      = 8,
+        BELL_AMP_INIT = 12000,
     };
     int samples     = AUDIO_SAMPLE_RATE * BELL_MS / 1000;
     int half_period = AUDIO_SAMPLE_RATE / (2 * BELL_FREQ_HZ);
@@ -144,12 +148,14 @@ void audio_emit_bell(void)
     if (samples > (int)(sizeof buf / sizeof buf[0])) {
         samples = (int)(sizeof buf / sizeof buf[0]);
     }
-    int16_t level = BELL_AMP;
+    int side = 1;
     int hp_count  = 0;
     for (int i = 0; i < samples; i++) {
-        buf[i] = level;
+        /* Линейный fade-out: амплитуда падает от BELL_AMP_INIT до 0. */
+        int amp = BELL_AMP_INIT * (samples - i) / samples;
+        buf[i] = (int16_t)(side * amp);
         if (++hp_count >= half_period) {
-            level = -level;
+            side = -side;
             hp_count = 0;
         }
     }
