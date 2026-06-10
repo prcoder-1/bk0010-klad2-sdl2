@@ -82,6 +82,63 @@ void bk_reset(void)
     bk_mem[REG_V_SCROLL + 1] = 0;
 }
 
+/* ---------------- Таймер БК ----------------------------------------- */
+
+static uint32_t g_timer_accum;       /* счётчик «накопленных инструкций» */
+static int      g_timer_logged_once; /* однократный лог факта работы */
+
+void bk_tick_timer(unsigned cpu_steps)
+{
+    uint8_t csr = bk_mem[REG_TVE_CSR];
+    if (!(csr & (1u << TVE_CSR_RUN))) {
+        g_timer_accum = 0;
+        return;
+    }
+
+    /* Делители частоты. */
+    unsigned divider = 1;
+    if (csr & (1u << TVE_CSR_D4))  divider *= 4;
+    if (csr & (1u << TVE_CSR_D16)) divider *= 16;
+
+    /* Один тик таймера ≈ 25 PDP-11-инструкций × делитель.
+     * (3 МГц / 128 ≈ 23,4 кГц базовых тиков; ≈ 600 тыс. инструкций
+     * в секунду — итого ≈ 25 инструкций на один такт без делителей.) */
+    unsigned threshold = 25u * divider;
+
+    if (!g_timer_logged_once && getenv("KLAD2_TIMER_LOG")) {
+        fprintf(stderr,
+                "[таймер] RUN установлен, CSR=%03o, LIMIT=%06o\n",
+                csr, (unsigned)(bk_mem[REG_TVE_LIMIT]
+                              | (bk_mem[REG_TVE_LIMIT + 1] << 8)));
+        g_timer_logged_once = 1;
+    }
+
+    g_timer_accum += cpu_steps;
+    while (g_timer_accum >= threshold) {
+        g_timer_accum -= threshold;
+
+        uint16_t cnt = (uint16_t)(bk_mem[REG_TVE_COUNT]
+                                | (bk_mem[REG_TVE_COUNT + 1] << 8));
+        if (cnt == 0) {
+            /* Перезагрузка из LIMIT либо остановка в однократном режиме. */
+            uint16_t lim = (uint16_t)(bk_mem[REG_TVE_LIMIT]
+                                    | (bk_mem[REG_TVE_LIMIT + 1] << 8));
+            bk_mem[REG_TVE_COUNT]     = (uint8_t)(lim & 0xff);
+            bk_mem[REG_TVE_COUNT + 1] = (uint8_t)(lim >> 8);
+            /* Поднять флаг события. */
+            bk_mem[REG_TVE_CSR] = (uint8_t)(csr | (1u << TVE_CSR_FL));
+            if (csr & (1u << TVE_CSR_OS)) {
+                bk_mem[REG_TVE_CSR] &= (uint8_t)~(1u << TVE_CSR_RUN);
+                return;
+            }
+        } else {
+            cnt--;
+            bk_mem[REG_TVE_COUNT]     = (uint8_t)(cnt & 0xff);
+            bk_mem[REG_TVE_COUNT + 1] = (uint8_t)(cnt >> 8);
+        }
+    }
+}
+
 /* ---------------- Перехватчики доступа к регистрам -------------------- */
 
 static void on_write_ext_dev(uint16_t value)
@@ -138,6 +195,15 @@ void bk_write_w(uint16_t addr, uint16_t value)
         switch (addr) {
         case REG_EXT_DEV:
             on_write_ext_dev(value);
+            break;
+        case REG_TVE_CSR:
+        case REG_TVE_LIMIT:
+            if (getenv("KLAD2_TIMER_LOG")) {
+                fprintf(stderr,
+                        "[таймер] запись слово %06o → %s\n",
+                        value,
+                        addr == REG_TVE_CSR ? "CSR" : "LIMIT");
+            }
             break;
         default:
             break;

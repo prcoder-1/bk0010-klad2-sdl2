@@ -183,6 +183,7 @@ int main(int argc, char **argv)
 
         if (run_cpu && !cpu.halted) {
             int n = pdp11_run_n(STEPS_PER_FRAME);
+            bk_tick_timer((unsigned)n);
             if (max_steps > 0) {
                 max_steps -= n;
                 if (max_steps <= 0) {
