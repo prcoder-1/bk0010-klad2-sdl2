@@ -14,6 +14,7 @@
 #include "pdp11.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* --- состояние виртуального текстового драйвера ------------------- */
@@ -85,54 +86,70 @@ static void draw_glyph_color(unsigned col, unsigned row, uint8_t code)
     }
 }
 
-/* ---- EMT 016 — формирование символа / переключение режимов ------
- * R0 = код символа или управляющий код. Управляющие — частично; для
- * печатных глиф рисуется в текущей позиции курсора через шрифт БК.
- * Управляющие коды смены цвета 0o2xx пока логируются — добавим, когда
- * увидим, что именно КЛАД-2 шлёт. */
+/* ---- EMT 016 — формирование символа
+ *
+ * Реальный BK-Monitor 017 для большинства кодов 0..017 не делает ничего,
+ * а CLR/LF/CR реализованы в BASIC-расширении. Но КЛАД-2 явно рассчитывает
+ * на BASIC-семантику: шлёт 0o14 для очистки между сценами, 0o12 для
+ * перевода строки и т.д. Без этой обработки экран не очищается между
+ * заставкой и меню. Поэтому реализуем BASIC-расширенный набор:
+ *   010      — backspace (двигаем курсор влево);
+ *   012      — line feed (курсор вниз);
+ *   014      — clear screen + home (как Form Feed);
+ *   015      — carriage return (курсор в столбец 0);
+ *   027/031/032 — БК-стрелки (вниз/вправо/вверх);
+ *   020..0177, 0240..0377 — рисуем глиф;
+ *   прочее   — no-op (логируется в KLAD2_EMT_LOG). */
 static void emt_016_putchar(void)
 {
     unsigned ch = cpu.r[0] & 0xffu;
+
     switch (ch) {
     case 010: /* ВЛЕВО */
         if (g_cursor_x > 0) g_cursor_x--;
         return;
-    case 012: /* ВК / перевод строки */
+    case 012: /* LF — курсор вниз с переносом в столбец 0 */
         g_cursor_x = 0;
         if (g_cursor_y < BK_TEXT_ROWS - 1) g_cursor_y++;
         return;
-    case 014: /* ОЧИСТКА ЭКРАНА */
+    case 014: /* FF — очистка экрана + курсор домой */
         memset(&bk_mem[MEM_VIDEO], 0, 0x4000);
         g_cursor_x = g_cursor_y = 0;
         return;
-    case 015: /* ВОЗВРАТ КАРЕТКИ */
+    case 015: /* CR — курсор в столбец 0, строка не меняется */
         g_cursor_x = 0;
         return;
-    case 031: /* ВПРАВО */
-        g_cursor_x++;
-        return;
-    case 032: /* ВВЕРХ */
-        if (g_cursor_y > 0) g_cursor_y--;
-        return;
-    case 027: /* ВНИЗ */
+    case 027: /* стрелка вниз */
         if (g_cursor_y < BK_TEXT_ROWS - 1) g_cursor_y++;
+        return;
+    case 031: /* стрелка вправо */
+        if (g_cursor_x < BK_TEXT_COLS - 1) g_cursor_x++;
+        return;
+    case 032: /* стрелка вверх */
+        if (g_cursor_y > 0) g_cursor_y--;
         return;
     }
 
-    /* Печатный символ? */
     const uint8_t *glyph = bk_font_glyph((uint8_t)ch);
-    if (glyph) {
-        draw_glyph_color(g_cursor_x, g_cursor_y, (uint8_t)ch);
-        g_cursor_x++;
-        if (g_cursor_x >= BK_TEXT_COLS) {
-            g_cursor_x = 0;
-            if (g_cursor_y < BK_TEXT_ROWS - 1) g_cursor_y++;
+    if (!glyph) {
+        if (getenv("KLAD2_EMT_LOG")) {
+            fprintf(stderr, "[EMT 016] нет глифа для %03o в (%u,%u)\n",
+                    ch, g_cursor_x, g_cursor_y);
         }
-    } else {
-        /* Управляющий код, который мы пока не понимаем (часто — смена
-         * цвета / режима). Логируем без падения. */
-        fprintf(stderr, "[EMT 016] управление %03o в (%u,%u)\n",
-                ch, g_cursor_x, g_cursor_y);
+        return;
+    }
+
+    if (getenv("KLAD2_EMT_LOG")) {
+        char vis = (ch >= 0x20 && ch < 0x7f) ? (char)ch : '?';
+        fprintf(stderr, "[EMT 016] печать %03o '%c' в (%u,%u)\n",
+                ch, vis, g_cursor_x, g_cursor_y);
+    }
+
+    draw_glyph_color(g_cursor_x, g_cursor_y, (uint8_t)ch);
+    g_cursor_x++;
+    if (g_cursor_x >= BK_TEXT_COLS) {
+        g_cursor_x = 0;
+        if (g_cursor_y < BK_TEXT_ROWS - 1) g_cursor_y++;
     }
 }
 
@@ -154,6 +171,10 @@ static void emt_020_puts(void)
 /* ---- EMT 024 — установить курсор (R1=x, R2=y) ------------------- */
 static void emt_024_set_cursor(void)
 {
+    if (getenv("KLAD2_EMT_LOG")) {
+        fprintf(stderr, "[EMT 024] курсор в (%u,%u)\n",
+                cpu.r[1], cpu.r[2]);
+    }
     g_cursor_x = cpu.r[1];
     g_cursor_y = cpu.r[2];
 }
