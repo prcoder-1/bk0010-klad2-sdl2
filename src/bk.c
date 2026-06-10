@@ -207,6 +207,12 @@ void bk_write_w(uint16_t addr, uint16_t value)
                         addr == REG_TVE_CSR ? "CSR" : "LIMIT");
             }
             break;
+        case REG_V_SCROLL:
+            fprintf(stderr,
+                    "[V_SCROLL] запись слово %06o (ADDRESS=%03o, "
+                    "EXT_MEMORY=%u)\n",
+                    value, value & 0xff, (value >> 9) & 1);
+            break;
         default:
             break;
         }
