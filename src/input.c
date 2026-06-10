@@ -34,12 +34,17 @@ static uint8_t sdl_to_bk_code(SDL_Keycode sym, uint16_t mod)
     /* Базовые управляющие. */
     switch (sym) {
     case SDLK_RETURN:    return 012; /* ВК */
-    case SDLK_ESCAPE:    return 033; /* СТОП-эквивалент (не настоящий СТОП) */
+    case SDLK_ESCAPE:    return 003; /* СТОП — соответствует БК-кодировке */
     case SDLK_BACKSPACE: return 030; /* ЗБ */
+    /* Стрелки БК-0010 по таблице раскладки клавиатуры:
+     *   ← (влево)  = 010
+     *   ↑ (вверх)  = 032
+     *   ↓ (вниз)   = 033
+     *   → (вправо) = 031 */
     case SDLK_LEFT:      return 010;
     case SDLK_RIGHT:     return 031;
     case SDLK_UP:        return 032;
-    case SDLK_DOWN:      return 027;
+    case SDLK_DOWN:      return 033;
     case SDLK_SPACE:     return 040;
     default: break;
     }
