@@ -129,37 +129,59 @@ void audio_emit_bell(void)
 {
     if (!g_dev) return;
 
-    /* Эмуляция «плик» — звука нажатия клавиш БК-0010. На реальной БК
-     * этот звук генерируется ROM-процедурой, которая делает короткую
-     * серию write-strobe в REG_EXT_DEV — пьезодинамик щёлкает.
-     * Звук очень короткий (5-10 мс), высокочастотный (~3 кГц),
-     * с быстрым затуханием — типичное «тиньк» / «плик».
+    /* Точная копия ROM-процедуры из bk10_017_mon.rom (адрес 0o102032):
      *
-     * Сэмулируем: square wave 3 кГц длиной 8 мс с линейным fade-out. */
+     *   mov $50, r2          ; 50 итераций внешнего цикла
+     *   mov $100, r3         ; r3 = 100 — счётчик задержки
+     * loop:
+     *   mov $320, @#177716   ; бит 6 (динамик) = 1
+     *   mov r3, r0           ; задержка через SOB-цикл
+     *   sob r0, *            ;
+     *   mov $220, @#177716   ; бит 6 = 0
+     *   mov r3, r0
+     *   sob r0, *
+     *   dec r3               ; уменьшаем r3 → частота растёт (свип)
+     *   sob r2, loop         ; повторить 50 раз
+     *
+     * На БК-3МГц SOB ≈ 10 циклов ≈ 3.3 мкс, поэтому r3=100 даёт
+     * полупериод 333 мкс (1500 Гц), а r3=50 — 165 мкс (3000 Гц).
+     * Итог: ~25 мс «плик» со свипом 1.5 → 3 кГц. */
     enum {
-        BELL_FREQ_HZ = 3000,
-        BELL_MS      = 8,
-        BELL_AMP_INIT = 12000,
+        BELL_OUTER     = 50,
+        BELL_R3_START  = 100,
+        BELL_R3_END    = 50,
+        BELL_AMP       = 9000,
     };
-    int samples     = AUDIO_SAMPLE_RATE * BELL_MS / 1000;
-    int half_period = AUDIO_SAMPLE_RATE / (2 * BELL_FREQ_HZ);
+    /* Время одной итерации SOB на БК-3МГц, в микросекундах: */
+    const double CYCLE_PER_SOB_US = 3.3;
 
-    int16_t buf[2048];
-    if (samples > (int)(sizeof buf / sizeof buf[0])) {
-        samples = (int)(sizeof buf / sizeof buf[0]);
-    }
-    int side = 1;
-    int hp_count  = 0;
-    for (int i = 0; i < samples; i++) {
-        /* Линейный fade-out: амплитуда падает от BELL_AMP_INIT до 0. */
-        int amp = BELL_AMP_INIT * (samples - i) / samples;
-        buf[i] = (int16_t)(side * amp);
-        if (++hp_count >= half_period) {
-            side = -side;
-            hp_count = 0;
+    int16_t buf[4096];
+    int idx = 0;
+    int16_t level = BELL_AMP;
+
+    for (int i = 0; i < BELL_OUTER; i++) {
+        int r3 = BELL_R3_START
+               - (BELL_R3_START - BELL_R3_END) * i / (BELL_OUTER - 1);
+        double half_period_us = r3 * CYCLE_PER_SOB_US;
+        int half_samples =
+            (int)(half_period_us * AUDIO_SAMPLE_RATE / 1.0e6 + 0.5);
+        if (half_samples < 1) half_samples = 1;
+
+        /* Полупериод высокого уровня (бит 6 = 1). */
+        for (int s = 0; s < half_samples; s++) {
+            if (idx >= (int)(sizeof buf / sizeof buf[0])) goto done;
+            buf[idx++] = level;
         }
+        level = -level;
+        /* Полупериод низкого уровня (бит 6 = 0). */
+        for (int s = 0; s < half_samples; s++) {
+            if (idx >= (int)(sizeof buf / sizeof buf[0])) goto done;
+            buf[idx++] = level;
+        }
+        level = -level;
     }
-    SDL_QueueAudio(g_dev, buf, (Uint32)(samples * sizeof(int16_t)));
+done:
+    SDL_QueueAudio(g_dev, buf, (Uint32)(idx * sizeof(int16_t)));
 }
 
 void audio_flush(void)
