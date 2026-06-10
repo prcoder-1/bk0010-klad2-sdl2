@@ -39,8 +39,9 @@ enum {
  * задержки и оптимизировался под средний (~5 c/instr) PDP-11; при
  * 10 000 инструкций/кадр геймплей идёт визуально быстрее оригинала.
  * Значение 4000 подобрано визуальным сравнением с эмулятором.
- * Регулируется флагом --speed N. */
-static int g_steps_per_frame = 4000;
+ * Регулируется флагом --speed N.
+ * Не static — нужен из audio.c для подбора частоты сэмплинга. */
+int g_steps_per_frame = 4000;
 
 static SDL_Window   *g_window;
 static SDL_Renderer *g_renderer;
@@ -191,6 +192,7 @@ int main(int argc, char **argv)
         if (run_cpu && !cpu.halted) {
             int n = pdp11_run_n(g_steps_per_frame);
             bk_tick_timer((unsigned)n);
+            audio_flush();
             if (max_steps > 0) {
                 max_steps -= n;
                 if (max_steps <= 0) {

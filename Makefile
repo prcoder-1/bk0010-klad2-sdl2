@@ -46,9 +46,12 @@ $(BUILD):
 run: $(BIN)
 	./$(BIN)
 
-# Бинарник тестов: один на каждый test_*.c.
+# Бинарник тестов: один на каждый test_*.c. audio.o тащит за собой
+# SDL2-зависимости (SDL_OpenAudioDevice и т.п.), а g_steps_per_frame
+# живёт в main.c которого тут нет — оба эти случая закрываем стабом
+# через -D test-флаг и -lSDL2 в линковке.
 $(BUILD)/test_%: $(BUILD)/test_%.o $(TEST_DEPS)
-	$(CC) $^ -o $@ -lm
+	$(CC) $^ -o $@ -lm $(shell pkg-config --libs sdl2)
 
 test: $(patsubst $(BUILD)/%.o,$(BUILD)/%,$(TEST_OBJS))
 	@set -e; for t in $^; do echo "=== $$t ==="; ./$$t; done

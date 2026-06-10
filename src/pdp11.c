@@ -14,6 +14,7 @@
  */
 
 #include "pdp11.h"
+#include "audio.h"
 #include "bk.h"
 
 #include <stdio.h>
@@ -812,6 +813,11 @@ int pdp11_run_n(int max_steps)
     while (n < max_steps && !cpu.halted) {
         if (pdp11_step() < 0) break;
         n++;
+        /* После каждой инструкции — тик аудио-генератора. Он сам решит,
+         * пора ли эмитить очередной сэмпл (дробное накопление). Это
+         * позволяет передавать тонкое тиканье динамика, которое КЛАД-2
+         * создаёт переключением бита EXT_DEV_MAG_KEY между инструкциями. */
+        audio_step();
     }
     return n;
 }

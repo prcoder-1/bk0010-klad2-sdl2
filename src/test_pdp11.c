@@ -19,6 +19,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Стаб для audio.o, который из main.c берёт скорость интерпретатора. */
+int g_steps_per_frame = 4000;
+
 static int tests_run    = 0;
 static int tests_failed = 0;
 
