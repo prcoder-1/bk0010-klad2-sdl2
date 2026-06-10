@@ -57,9 +57,15 @@ static void emt_014_init_rom_drivers(void)
 enum {
     BK_TEXT_COLS = 32,
     BK_TEXT_ROWS = 25,
-    BK_TEXT_FG   = 3, /* красный (в палитре по умолчанию) */
-    BK_TEXT_BG   = 0  /* чёрный */
+    BK_TEXT_BG   = 0  /* чёрный (фон не меняется управляющими кодами) */
 };
+
+/* Текущий цвет переднего плана (0..3 — палитра БК).
+ * Меняется управляющими кодами 0o221..0o224 (см. GRAF.mac в исходниках
+ * БК-ROM-Бейсика): 221 — красный, 222 — зелёный, 223 — синий,
+ * 224 — чёрный (невидимый на чёрном фоне; КЛАД-2 использует это для
+ * скрытия первой копии «Баранов» на заставке). */
+static unsigned g_text_fg = 3; /* по умолчанию красный */
 
 static void draw_glyph_color(unsigned col, unsigned row, uint8_t code)
 {
@@ -73,12 +79,12 @@ static void draw_glyph_color(unsigned col, unsigned row, uint8_t code)
         uint8_t b0 = 0, b1 = 0;
         /* Левые 4 пикселя — биты 0..3 шрифта → байт 0 экрана. */
         for (int p = 0; p < 4; p++) {
-            unsigned c = ((fb >> p) & 1) ? BK_TEXT_FG : BK_TEXT_BG;
+            unsigned c = ((fb >> p) & 1) ? g_text_fg : BK_TEXT_BG;
             b0 |= (uint8_t)(c << (p * 2));
         }
         /* Правые 4 пикселя — биты 4..7 → байт 1 экрана. */
         for (int p = 0; p < 4; p++) {
-            unsigned c = ((fb >> (p + 4)) & 1) ? BK_TEXT_FG : BK_TEXT_BG;
+            unsigned c = ((fb >> (p + 4)) & 1) ? g_text_fg : BK_TEXT_BG;
             b1 |= (uint8_t)(c << (p * 2));
         }
         bk_mem[base + r * 64u + 0] = b0;
@@ -128,6 +134,15 @@ static void emt_016_putchar(void)
     case 032: /* стрелка вверх */
         if (g_cursor_y > 0) g_cursor_y--;
         return;
+    /* Цвет переднего плана (GRAF.mac в исходниках БК-ROM-Бейсика,
+     * подтверждено разделом 8.3.2.3 руководства БК-0010). */
+    case 0221: g_text_fg = 3; return; /* красный */
+    case 0222: g_text_fg = 2; return; /* зелёный */
+    case 0223: g_text_fg = 1; return; /* синий */
+    case 0224: g_text_fg = 0; return; /* чёрный (невидимый) */
+    /* Код 022 — служебный (раздел 8.3.2.2), без графики; КЛАД-2 шлёт
+     * его перед текстом меню, и на оригинале он невидим. */
+    case 022: return;
     }
 
     const uint8_t *glyph = bk_font_glyph((uint8_t)ch);
