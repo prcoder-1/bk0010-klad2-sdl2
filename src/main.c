@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 enum {
     BK_SCREEN_W   = 256,
@@ -219,7 +220,20 @@ int main(int argc, char **argv)
                 running = 0; break;
             case SDL_KEYDOWN:
                 if (ev.key.keysym.sym == SDLK_ESCAPE) running = 0;
-                else input_handle_sdl_event(&ev);
+                else if (ev.key.keysym.sym == SDLK_F12) {
+                    /* Снимок всей памяти БК (64 КиБ) в файл с меткой
+                     * времени — нужен для прогрессивной декомпиляции:
+                     * КЛАД-2 распаковывает разный код в разных режимах
+                     * (меню/игра/смерть), и каждый дамп даёт срез того,
+                     * что в данный момент уже лежит в памяти. */
+                    char path[64];
+                    time_t t = time(NULL);
+                    struct tm tm; localtime_r(&t, &tm);
+                    snprintf(path, sizeof path,
+                             "klad2_dump_%02d%02d%02d.bin",
+                             tm.tm_hour, tm.tm_min, tm.tm_sec);
+                    dump_memory(path);
+                } else input_handle_sdl_event(&ev);
                 break;
             default:
                 input_handle_sdl_event(&ev);

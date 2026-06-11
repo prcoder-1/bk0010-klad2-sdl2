@@ -20,6 +20,9 @@ ab.log
 trace.log
 output.log
 
+# F12-снимки памяти БК
+klad2_dump_*.bin
+
 # Системное
 *~
 .*.swp
