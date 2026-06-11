@@ -16,14 +16,177 @@
 #include "pdp11.h"
 #include "audio.h"
 #include "bk.h"
+#include "routines.h"
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 cpu_t cpu;
 
 static emt_handler_fn g_emt_handler;
 static emt_handler_fn g_trap_handler;
 static int            g_trace;
+
+/* =================== A/B-сравнение R_14030 ============================
+ * При активном env-флаге KLAD2_AB_R14030: на каждом входе в адрес
+ * 0o14030 делаем snapshot всей памяти+регистров, запускаем C-замену,
+ * сохраняем её результат, восстанавливаем snapshot, даём интерпретатору
+ * пройти процедуру штатно. Когда PC возвращается в адрес возврата —
+ * сравниваем результат C-версии с тем, что получился у интерпретатора.
+ * Первое расхождение выводим в stderr.
+ *
+ * Это «in-process» режим — не требует записи/воспроизведения ввода,
+ * детерминированно даёт точное место бага. Накладные расходы: 2×64 КиБ
+ * memcpy на каждом вызове R_14030, ~3000 вызовов за геймсессию —
+ * приемлемо в дебаг-режиме.
+ * ------------------------------------------------------------------- */
+#define AB_R14030_PC  0014030u
+
+extern uint8_t bk_mem[];     /* объявлено в bk.h, но без size — берём как массив */
+
+static int      g_ab_enabled  = -1;       /* -1: не проверяли env, 0/1: ответ */
+static int      g_ab_active;              /* 1 — внутри A/B-окна */
+static uint16_t g_ab_ret_pc;              /* PC возврата ожидается тут */
+static uint16_t g_ab_r4;                  /* anim-структура */
+static uint8_t  g_ab_snap_mem[0x10000];   /* состояние до вызова */
+static uint8_t  g_ab_c_mem[0x10000];      /* состояние после C-версии */
+static uint16_t g_ab_snap_regs[8];
+static uint16_t g_ab_snap_psw;
+static unsigned g_ab_calls;
+static unsigned g_ab_fails;
+
+/* Лог записей в видеообласть. Два массива, заполняются хуком
+ * `ab_write_hook` в зависимости от фазы (g_ab_phase). Запись — это
+ * (addr, value, is_word). */
+typedef struct {
+    uint16_t addr;
+    uint16_t value;
+    uint8_t  is_word;
+} ab_wlog_t;
+
+#define AB_WLOG_MAX 512
+static ab_wlog_t g_ab_wlog_c[AB_WLOG_MAX];
+static ab_wlog_t g_ab_wlog_i[AB_WLOG_MAX];
+static int       g_ab_wlog_c_n;
+static int       g_ab_wlog_i_n;
+static int       g_ab_phase;             /* 0=off, 1=C, 2=interp */
+
+static void ab_write_hook(uint16_t addr, uint16_t value, int is_word)
+{
+    /* Логируем только записи в видеообласть 0o40000..0o100000. */
+    if (addr < MEM_VIDEO || addr >= MEM_ROM_MON) return;
+    ab_wlog_t *log = (g_ab_phase == 1) ? g_ab_wlog_c : g_ab_wlog_i;
+    int *n         = (g_ab_phase == 1) ? &g_ab_wlog_c_n : &g_ab_wlog_i_n;
+    if (*n >= AB_WLOG_MAX) return;
+    log[*n].addr    = addr;
+    log[*n].value   = value;
+    log[*n].is_word = (uint8_t)is_word;
+    (*n)++;
+}
+
+static int ab_check_env(void)
+{
+    if (g_ab_enabled < 0) g_ab_enabled = getenv("KLAD2_AB_R14030") ? 1 : 0;
+    return g_ab_enabled;
+}
+
+static void ab_on_enter(void)
+{
+    if (!ab_check_env() || g_ab_active) return;
+    g_ab_active = 1;
+    g_ab_calls++;
+    g_ab_r4 = cpu.r[4];
+
+    /* 1) Snapshot всего состояния. */
+    memcpy(g_ab_snap_mem, bk_mem, 0x10000);
+    memcpy(g_ab_snap_regs, cpu.r, sizeof(cpu.r));
+    g_ab_snap_psw = cpu.psw;
+
+    /* 2) Прогоняем C-замену под write-логгером в режиме "C". */
+    g_ab_wlog_c_n = g_ab_wlog_i_n = 0;
+    g_ab_phase = 1;
+    bk_write_hook = ab_write_hook;
+    R_14030_draw_compound_sprite();
+    bk_write_hook = NULL;
+    g_ab_phase = 0;
+
+    /* 3) Сохраняем результат C-версии. */
+    memcpy(g_ab_c_mem, bk_mem, 0x10000);
+    g_ab_ret_pc = cpu.r[7];
+
+    /* 4) Восстанавливаем snapshot для интерпретатора. */
+    memcpy(bk_mem, g_ab_snap_mem, 0x10000);
+    memcpy(cpu.r, g_ab_snap_regs, sizeof(cpu.r));
+    cpu.psw = g_ab_snap_psw;
+    /* 5) Включаем write-логгер в режиме "interp" — выключится в
+     *    ab_check_result, когда PC вернётся в адрес возврата. */
+    g_ab_phase = 2;
+    bk_write_hook = ab_write_hook;
+}
+
+static void ab_check_result(void)
+{
+    if (!g_ab_active) return;
+    if (cpu.r[7] != g_ab_ret_pc) return;
+
+    /* Выключаем write-логгер перед сравнением. */
+    bk_write_hook = NULL;
+    g_ab_phase = 0;
+
+    /* Сравниваем write-логи — это самое чёткое представление, что
+     * именно делают версии в видеообласть. Печатаем только при первом
+     * расхождении (или первой паре с разными значениями), чтобы лог не
+     * раздувался. */
+    int diff = 0;
+    int max_n = g_ab_wlog_c_n > g_ab_wlog_i_n ? g_ab_wlog_c_n : g_ab_wlog_i_n;
+    for (int i = 0; i < max_n; i++) {
+        int c_ok = i < g_ab_wlog_c_n;
+        int i_ok = i < g_ab_wlog_i_n;
+        if (c_ok && i_ok &&
+            g_ab_wlog_c[i].addr  == g_ab_wlog_i[i].addr &&
+            g_ab_wlog_c[i].value == g_ab_wlog_i[i].value &&
+            g_ab_wlog_c[i].is_word == g_ab_wlog_i[i].is_word) {
+            continue;
+        }
+        if (!diff && g_ab_fails < 5) {
+            fprintf(stderr,
+                    "AB FAIL #%u: вход r0=%06o r4=%06o "
+                    "*r4=%06o *(r4+2)=%06o *(r4+4)=%06o *(r4+6)=%06o\n",
+                    g_ab_calls,
+                    g_ab_snap_regs[0], g_ab_snap_regs[4],
+                    (unsigned)(g_ab_snap_mem[g_ab_r4]   | (g_ab_snap_mem[g_ab_r4+1]<<8)),
+                    (unsigned)(g_ab_snap_mem[g_ab_r4+2] | (g_ab_snap_mem[g_ab_r4+3]<<8)),
+                    (unsigned)(g_ab_snap_mem[g_ab_r4+4] | (g_ab_snap_mem[g_ab_r4+5]<<8)),
+                    (unsigned)(g_ab_snap_mem[g_ab_r4+6] | (g_ab_snap_mem[g_ab_r4+7]<<8)));
+            fprintf(stderr, "  write-лог C  (%d записей):\n", g_ab_wlog_c_n);
+            for (int j = 0; j < g_ab_wlog_c_n; j++) {
+                fprintf(stderr, "    [%2d] %s %06o = %06o\n",
+                        j, g_ab_wlog_c[j].is_word ? "w" : "b",
+                        g_ab_wlog_c[j].addr, g_ab_wlog_c[j].value);
+            }
+            fprintf(stderr, "  write-лог INTERP (%d записей):\n", g_ab_wlog_i_n);
+            for (int j = 0; j < g_ab_wlog_i_n; j++) {
+                fprintf(stderr, "    [%2d] %s %06o = %06o\n",
+                        j, g_ab_wlog_i[j].is_word ? "w" : "b",
+                        g_ab_wlog_i[j].addr, g_ab_wlog_i[j].value);
+            }
+            fprintf(stderr, "  ↑ первое расхождение на индексе %d\n", i);
+        }
+        diff++;
+        break;
+    }
+    if (diff) g_ab_fails++;
+    g_ab_active = 0;
+}
+
+__attribute__((destructor))
+static void ab_summary(void)
+{
+    if (g_ab_enabled != 1) return;
+    fprintf(stderr, "AB R_14030: %u вызовов, %u расхождений\n",
+            g_ab_calls, g_ab_fails);
+}
 
 /* ================== Управление и трасса =============================== */
 
@@ -698,6 +861,26 @@ int pdp11_step(void)
 {
     if (cpu.halted) return -1;
 
+    /* A/B-режим: при входе в 0o14030 запускаем C-версию на копии,
+     * восстанавливаем, продолжаем нормальной интерпретацией. */
+    if (cpu.r[7] == AB_R14030_PC) ab_on_enter();
+
+
+    /* Если для текущего PC зарегистрирована C-замена — вызываем её
+     * вместо декодирования. Замена сама эмулирует RTS, поэтому после
+     * её работы PC уже указывает на возврат. */
+    {
+        routine_fn rfn = routines_lookup(cpu.r[7]);
+        if (rfn) {
+            if (g_trace) {
+                fprintf(stderr, "C-замена @PC=%06o\n", (unsigned)cpu.r[7]);
+            }
+            rfn();
+            ab_check_result();
+            return 0;
+        }
+    }
+
     if (g_trace) {
         fprintf(stderr,
                 "PC=%06o op=%06o "
@@ -812,6 +995,10 @@ int pdp11_run_n(int max_steps)
     int n = 0;
     while (n < max_steps && !cpu.halted) {
         if (pdp11_step() < 0) break;
+        /* A/B-проверка: если PC интерпретатора вернулся в ожидаемый
+         * адрес после интерпретированной 0o14030 — сравнить результат
+         * с тем, что насчитала C-замена. */
+        ab_check_result();
         n++;
         /* После каждой инструкции — тик аудио-генератора. Он сам решит,
          * пора ли эмитить очередной сэмпл (дробное накопление). Это

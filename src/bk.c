@@ -235,9 +235,12 @@ uint16_t bk_read_w(uint16_t addr)
 
 /* ---------------- Запись ---------------------------------------------- */
 
+bk_write_hook_fn bk_write_hook;
+
 void bk_write_b(uint16_t addr, uint8_t value)
 {
     bk_mem[addr] = value;
+    if (bk_write_hook) bk_write_hook(addr, value, 0);
 
     if (addr >= MEM_REGS) {
         switch (addr & 0xFFFEu) {
@@ -257,6 +260,7 @@ void bk_write_w(uint16_t addr, uint16_t value)
     addr &= 0xFFFEu;
     bk_mem[addr]     = (uint8_t)(value & 0xFFu);
     bk_mem[addr + 1] = (uint8_t)((value >> 8) & 0xFFu);
+    if (bk_write_hook) bk_write_hook(addr, value, 1);
 
     if (addr >= MEM_REGS) {
         switch (addr) {

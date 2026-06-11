@@ -210,4 +210,13 @@ uint16_t bk_read_w(uint16_t addr);
 void     bk_write_b(uint16_t addr, uint8_t value);
 void     bk_write_w(uint16_t addr, uint16_t value);
 
+/* ----- Хук на запись (для A/B-диагностики декомпиляции) ----------------
+ * Если задан, вызывается из bk_write_b/bk_write_w на каждую запись.
+ *   `is_word` = 1 для word-записи, 0 для байтовой.
+ *   `value` — записываемое значение (uint16_t — для байтовой используется
+ *   только младшие 8 бит).
+ * По умолчанию указатель NULL → нулевые накладные расходы. */
+typedef void (*bk_write_hook_fn)(uint16_t addr, uint16_t value, int is_word);
+extern bk_write_hook_fn bk_write_hook;
+
 #endif /* KLAD2_BK_H */
