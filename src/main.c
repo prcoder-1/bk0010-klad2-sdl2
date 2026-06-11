@@ -104,6 +104,29 @@ static void fill_demo_pattern(void)
 
 /* ---------------- main ----------------------------------------------- */
 
+/* Дамп всей виртуальной БК-памяти в файл (64 КиБ).
+ * Используется для разборки кода КЛАД-2 ПОСЛЕ работы PIC-релокатора —
+ * сырой BIN распакован в bk_mem, и dump → pdp11-aout-objdump даёт
+ * читаемый код, а не зашифрованную PIC-таблицу. */
+static int dump_memory(const char *path)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        fprintf(stderr, "dump_memory: не могу открыть '%s'\n", path);
+        return -1;
+    }
+    size_t n = fwrite(bk_mem, 1, BK_MEM_SIZE, f);
+    fclose(f);
+    if (n != BK_MEM_SIZE) {
+        fprintf(stderr, "dump_memory: записано %zu вместо %u\n",
+                n, (unsigned)BK_MEM_SIZE);
+        return -1;
+    }
+    fprintf(stderr, "Дамп %u байт записан в %s (PC=%06o)\n",
+            (unsigned)BK_MEM_SIZE, path, (unsigned)cpu.r[7]);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     int trace = 0;
@@ -111,6 +134,7 @@ int main(int argc, char **argv)
     const char *bin_path = NULL;
     const char *rom_path =
         "/home/prcoder/emulators/БК-0010-01/bkemu/ROM/bk10_017_mon.rom";
+    const char *dump_path = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--trace") == 0) {
@@ -122,11 +146,14 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--speed") == 0 && i + 1 < argc) {
             g_steps_per_frame = (int)strtol(argv[++i], NULL, 0);
             if (g_steps_per_frame < 100) g_steps_per_frame = 100;
+        } else if (strcmp(argv[i], "--dump-memory") == 0 && i + 1 < argc) {
+            dump_path = argv[++i];
         } else if (argv[i][0] == '-') {
             fprintf(stderr,
                     "Неизвестный флаг: %s\n"
                     "Использование: %s [--trace] [--max-steps N] "
-                    "[--rom path/to/mon.rom] [--speed N] [путь/к/BIN]\n",
+                    "[--rom path/to/mon.rom] [--speed N] "
+                    "[--dump-memory path] [путь/к/BIN]\n",
                     argv[i], argv[0]);
             return EXIT_FAILURE;
         } else {
@@ -217,6 +244,7 @@ int main(int argc, char **argv)
                 fprintf(stderr,
                         "ЦП остановлен (HALT/ошибка) на PC=%06o\n",
                         (unsigned)cpu.r[7]);
+                if (dump_path) { dump_memory(dump_path); dump_path = NULL; }
             }
         }
 

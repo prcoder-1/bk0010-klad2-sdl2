@@ -15,6 +15,11 @@ asm/*.dis
 *.bkscreen
 *.png.dump
 
+# Диагностические логи (KLAD2_AB_*, KLAD2_*_DUMP, --trace и т.п.)
+ab.log
+trace.log
+output.log
+
 # Системное
 *~
 .*.swp
