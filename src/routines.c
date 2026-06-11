@@ -237,7 +237,9 @@ enum {
     XOR_MASK_STRIDE      = 0050u,    /* 40 байт между двумя XOR-масками */
 };
 
-void R_14030_draw_compound_sprite(void)
+/* Тело R_14030 без эмуляции RTS — удобно вызывать как inline из других
+ * декомпилированных процедур (которые сами потом делают rts_pc). */
+static void R_14030_body(void)
 {
     /* Параметры функции:
      *   r0 — новый код кадра.
@@ -331,7 +333,93 @@ void R_14030_draw_compound_sprite(void)
 
     /* 8) XOR-маска вторая. */
     inline_xor_sprite(mp2, mx2);
+}
 
+void R_14030_draw_compound_sprite(void)
+{
+    R_14030_body();
+    rts_pc();
+}
+
+/* ---------------------------------------------------------------------
+ * Anim-таймеры героя/врагов (0o07202, 0o07242, 0o10102, 0o10142).
+ *
+ * Каждая — короткая обёртка над R_14030: поднимает константы (r2 =
+ * xor_base, r4 = anim-структура, опционально r0 = 8 — «idle»-направление),
+ * проверяет внутренний счётчик в системной памяти и либо инкрементирует
+ * его, либо вызывает R_14030 и сбрасывает счётчик. Это вычурный
+ * «делитель частоты» для анимации: фактическое движение героя/врага
+ * случается только на каждом (threshold+2)-м кадре.
+ *
+ * Оригинал 0o07202 (16 байт):
+ *   mov   #021760, r2          ; xor_base
+ *   mov   #014440, r4          ; anim struct
+ *   cmpb  #7, @#017366         ; signed cmp 7 c counter byte
+ *   bge   incr                 ; берётся если 7 >= counter, т.е. counter <= 7
+ *   jsr   pc, @#014030         ; иначе — R_14030
+ *   clrb  @#017366             ;        counter = 0
+ *   br    out
+ * incr:
+ *   incb  @#017366
+ * out:
+ *   rts   pc
+ *
+ * Остальные три — изоморфные, отличаются 5 константами:
+ *   xor_base, anim-структурой, адресом и шириной (byte/word) счётчика,
+ *   threshold, и есть ли pre-установка r0 = 8 (idle-режим).
+ * ------------------------------------------------------------------- */
+static void anim_tick(uint16_t xor_base, uint16_t anim,
+                      uint16_t counter_addr, int byte_op, int16_t threshold)
+{
+    cpu.r[2] = xor_base;
+    cpu.r[4] = anim;
+
+    int16_t cnt = byte_op
+        ? (int16_t)(int8_t)bk_read_b(counter_addr)
+        : (int16_t)bk_read_w(counter_addr);
+
+    if (threshold >= cnt) {
+        /* `bge` берётся → инкремент счётчика. */
+        int16_t nxt = (int16_t)(cnt + 1);
+        if (byte_op) bk_write_b(counter_addr, (uint8_t)nxt);
+        else         bk_write_w(counter_addr, (uint16_t)nxt);
+    } else {
+        /* Иначе — нарисовать спрайт и сбросить счётчик. */
+        R_14030_body();
+        if (byte_op) bk_write_b(counter_addr, 0);
+        else         bk_write_w(counter_addr, 0);
+    }
+}
+
+/* 0o07202 (0x0e82): враг #2 в движении, byte-счётчик, threshold=7,
+ * r0 приходит снаружи (текущее направление). */
+void R_07202_anim_tick_e2_move(void)
+{
+    anim_tick(0021760u, 0014440u, 0017366u, 1, 7);
+    rts_pc();
+}
+
+/* 0o07242 (0x0ea2): враг #2 в покое, byte-счётчик, threshold=4,
+ * r0 жёстко = 8 (idle-направление). */
+void R_07242_anim_tick_e2_idle(void)
+{
+    cpu.r[0] = 0010u;
+    anim_tick(0021760u, 0014440u, 0017370u, 1, 4);
+    rts_pc();
+}
+
+/* 0o10102 (0x1042): враг #1 в движении, WORD-счётчик, threshold=7. */
+void R_10102_anim_tick_e1_move(void)
+{
+    anim_tick(0021760u, 0014430u, 0017362u, 0, 7);
+    rts_pc();
+}
+
+/* 0o10142 (0x1062): враг #1 в покое, WORD-счётчик, threshold=4, r0=8. */
+void R_10142_anim_tick_e1_idle(void)
+{
+    cpu.r[0] = 0010u;
+    anim_tick(0021760u, 0014430u, 0017364u, 0, 4);
     rts_pc();
 }
 
@@ -344,6 +432,10 @@ static const struct {
     uint16_t   pc;
     routine_fn fn;
 } g_routines[] = {
+    { 0007202u, R_07202_anim_tick_e2_move },
+    { 0007242u, R_07242_anim_tick_e2_idle },
+    { 0010102u, R_10102_anim_tick_e1_move },
+    { 0010142u, R_10142_anim_tick_e1_idle },
     { 0014030u, R_14030_draw_compound_sprite },
     { 0014302u, R_14302_draw_glyph_8x8 },
     { 0014354u, R_14354_xor_sprite_8rows },

@@ -28,24 +28,55 @@ static emt_handler_fn g_emt_handler;
 static emt_handler_fn g_trap_handler;
 static int            g_trace;
 
-/* =================== A/B-сравнение R_14030 ============================
- * При активном env-флаге KLAD2_AB_R14030: на каждом входе в адрес
- * 0o14030 делаем snapshot всей памяти+регистров, запускаем C-замену,
- * сохраняем её результат, восстанавливаем snapshot, даём интерпретатору
- * пройти процедуру штатно. Когда PC возвращается в адрес возврата —
- * сравниваем результат C-версии с тем, что получился у интерпретатора.
+/* =================== A/B-сравнение C-замен ============================
+ * При активном env-флаге KLAD2_AB=<address|all>: на каждом входе в
+ * указанный адрес делаем snapshot всей памяти+регистров, запускаем
+ * C-замену, сохраняем её результат, восстанавливаем snapshot, даём
+ * интерпретатору пройти процедуру штатно. Когда PC возвращается в
+ * адрес возврата — сравниваем результат C-версии с интерпретатором.
  * Первое расхождение выводим в stderr.
  *
  * Это «in-process» режим — не требует записи/воспроизведения ввода,
  * детерминированно даёт точное место бага. Накладные расходы: 2×64 КиБ
- * memcpy на каждом вызове R_14030, ~3000 вызовов за геймсессию —
- * приемлемо в дебаг-режиме.
- * ------------------------------------------------------------------- */
-#define AB_R14030_PC  0014030u
+ * memcpy на каждом вызове, ~тысячи вызовов за геймсессию — приемлемо
+ * в дебаг-режиме.
+ *
+ * KLAD2_AB=all      — все зарегистрированные ниже адреса.
+ * KLAD2_AB=014030   — только конкретный адрес (восьмеричный).
+ *
+ * Совместимость со старым флагом: KLAD2_AB_R14030=1 ≡ KLAD2_AB=014030. */
 
 extern uint8_t bk_mem[];     /* объявлено в bk.h, но без size — берём как массив */
 
+/* Таблица «PC → C-замена для A/B». Расширяется по мере декомпиляции.
+ * Регистрация здесь НЕ означает, что C-замена включена в продакшене
+ * (для этого её надо добавить в g_routines[] в routines.c) — это
+ * только список того, что можно прогнать через A/B. */
+static const struct {
+    uint16_t pc;
+    routine_fn fn;
+    const char *name;
+} g_ab_table[] = {
+    { 0014030u, R_14030_draw_compound_sprite, "R_14030" },
+    { 0007202u, R_07202_anim_tick_e2_move,    "R_07202" },
+    { 0007242u, R_07242_anim_tick_e2_idle,    "R_07242" },
+    { 0010102u, R_10102_anim_tick_e1_move,    "R_10102" },
+    { 0010142u, R_10142_anim_tick_e1_idle,    "R_10142" },
+};
+
+static routine_fn ab_lookup(uint16_t pc, const char **out_name)
+{
+    for (size_t i = 0; i < sizeof g_ab_table / sizeof g_ab_table[0]; i++) {
+        if (g_ab_table[i].pc == pc) {
+            if (out_name) *out_name = g_ab_table[i].name;
+            return g_ab_table[i].fn;
+        }
+    }
+    return NULL;
+}
+
 static int      g_ab_enabled  = -1;       /* -1: не проверяли env, 0/1: ответ */
+static uint16_t g_ab_only_pc;             /* 0 — все, иначе конкретный адрес */
 static int      g_ab_active;              /* 1 — внутри A/B-окна */
 static uint16_t g_ab_ret_pc;              /* PC возврата ожидается тут */
 static uint16_t g_ab_r4;                  /* anim-структура */
@@ -87,13 +118,30 @@ static void ab_write_hook(uint16_t addr, uint16_t value, int is_word)
 
 static int ab_check_env(void)
 {
-    if (g_ab_enabled < 0) g_ab_enabled = getenv("KLAD2_AB_R14030") ? 1 : 0;
+    if (g_ab_enabled < 0) {
+        const char *e = getenv("KLAD2_AB");
+        if (!e) e = getenv("KLAD2_AB_R14030") ? "014030" : NULL;
+        if (e) {
+            g_ab_enabled = 1;
+            if (strcmp(e, "all") == 0) g_ab_only_pc = 0;
+            else                       g_ab_only_pc = (uint16_t)strtoul(e, NULL, 8);
+        } else {
+            g_ab_enabled = 0;
+        }
+    }
     return g_ab_enabled;
 }
+
+static const char *g_ab_cur_name;
+static routine_fn  g_ab_cur_fn;
 
 static void ab_on_enter(void)
 {
     if (!ab_check_env() || g_ab_active) return;
+    routine_fn fn = ab_lookup(cpu.r[7], &g_ab_cur_name);
+    if (!fn) return;
+    if (g_ab_only_pc && cpu.r[7] != g_ab_only_pc) return;
+    g_ab_cur_fn = fn;
     g_ab_active = 1;
     g_ab_calls++;
     g_ab_r4 = cpu.r[4];
@@ -107,7 +155,7 @@ static void ab_on_enter(void)
     g_ab_wlog_c_n = g_ab_wlog_i_n = 0;
     g_ab_phase = 1;
     bk_write_hook = ab_write_hook;
-    R_14030_draw_compound_sprite();
+    g_ab_cur_fn();
     bk_write_hook = NULL;
     g_ab_phase = 0;
 
@@ -151,9 +199,9 @@ static void ab_check_result(void)
         }
         if (!diff && g_ab_fails < 5) {
             fprintf(stderr,
-                    "AB FAIL #%u: вход r0=%06o r4=%06o "
+                    "AB FAIL %s #%u: вход r0=%06o r4=%06o "
                     "*r4=%06o *(r4+2)=%06o *(r4+4)=%06o *(r4+6)=%06o\n",
-                    g_ab_calls,
+                    g_ab_cur_name, g_ab_calls,
                     g_ab_snap_regs[0], g_ab_snap_regs[4],
                     (unsigned)(g_ab_snap_mem[g_ab_r4]   | (g_ab_snap_mem[g_ab_r4+1]<<8)),
                     (unsigned)(g_ab_snap_mem[g_ab_r4+2] | (g_ab_snap_mem[g_ab_r4+3]<<8)),
@@ -184,7 +232,7 @@ __attribute__((destructor))
 static void ab_summary(void)
 {
     if (g_ab_enabled != 1) return;
-    fprintf(stderr, "AB R_14030: %u вызовов, %u расхождений\n",
+    fprintf(stderr, "AB: %u вызовов, %u расхождений\n",
             g_ab_calls, g_ab_fails);
 }
 
@@ -861,9 +909,9 @@ int pdp11_step(void)
 {
     if (cpu.halted) return -1;
 
-    /* A/B-режим: при входе в 0o14030 запускаем C-версию на копии,
-     * восстанавливаем, продолжаем нормальной интерпретацией. */
-    if (cpu.r[7] == AB_R14030_PC) ab_on_enter();
+    /* A/B-режим: при входе в любой адрес из g_ab_table запускаем
+     * C-версию на копии, восстанавливаем, продолжаем интерпретацией. */
+    ab_on_enter();
 
 
     /* Если для текущего PC зарегистрирована C-замена — вызываем её

@@ -36,5 +36,9 @@ routine_fn routines_lookup(uint16_t pc);
  * g_routines[], но мы хотим запустить её для сравнения с интерпрета-
  * тором). По мере декомпиляции — добавляем декларации сюда. */
 void R_14030_draw_compound_sprite(void);
+void R_07202_anim_tick_e2_move(void);
+void R_07242_anim_tick_e2_idle(void);
+void R_10102_anim_tick_e1_move(void);
+void R_10142_anim_tick_e1_idle(void);
 
 #endif /* KLAD2_ROUTINES_H */
