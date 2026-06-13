@@ -126,9 +126,18 @@ int input_handle_sdl_event(const SDL_Event *ev)
         else         bk_mem[REG_PAR_INTERF] &= (uint8_t)~(1u << bit);
     }
 
-    /* 2. Регистр клавиатуры (REG_KEY_DATA) и SYS_LAST_KEY: используются
-     *    для текстового ввода в меню. Игнорируем SDL2 auto-repeat —
-     *    в БК клавиатура не повторяет код без клавиши ПОВТ. */
+    /* 2. Регистр клавиатуры (REG_KEY_DATA) и SYS_LAST_KEY: на БК-0010
+     *    контроллер клавиатуры при нажатии защёлкивает скан-код в
+     *    KEY_DATA и поднимает KEY_STATE.STATE. Чтение KEY_DATA
+     *    аппаратно сбрасывает STATE (см. bk.c::on_read_key_data); сам
+     *    код в KEY_DATA остаётся, пока не придёт следующая клавиша.
+     *
+     *    При KEYUP мы НЕ трогаем KEY_DATA и KEY_STATE — иначе КЛАД-2
+     *    видел «пришла новая клавиша 0» и интерпретировал stale-код в
+     *    своих буферах как «продолжать движение вправо». Это и было
+     *    видимым багом «сполз с лестницы» (project_input_bug.md).
+     *    Игнорируем SDL2 auto-repeat — в БК клавиатура не повторяет код
+     *    без клавиши ПОВТ. */
     if (pressed && !ev->key.repeat) {
         uint8_t code = sdl_to_bk_code(sym, ev->key.keysym.mod);
         if (code) {
@@ -136,14 +145,6 @@ int input_handle_sdl_event(const SDL_Event *ev)
             bk_mem[SYS_LAST_KEY]      = code;
             bk_mem[SYS_LAST_KEY_FLAG] = 1;
             bk_mem[REG_KEY_STATE]    |= (uint8_t)(1u << KEY_STATE_STATE);
-        }
-    } else if (!pressed) {
-        uint8_t code = sdl_to_bk_code(sym, 0);
-        if (code && bk_mem[REG_KEY_DATA] == code) {
-            bk_mem[REG_KEY_DATA]      = 0;
-            bk_mem[SYS_LAST_KEY]      = 0;
-            bk_mem[SYS_LAST_KEY_FLAG] = 0;
-            bk_mem[REG_KEY_STATE]    &= (uint8_t)~(1u << KEY_STATE_STATE);
         }
     }
 

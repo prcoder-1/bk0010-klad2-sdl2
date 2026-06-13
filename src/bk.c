@@ -218,9 +218,23 @@ static void log_ext_dev_read(uint16_t addr)
     }
 }
 
+/* На реальной БК-0010 чтение REG_KEY_DATA аппаратно сбрасывает бит
+ * KEY_STATE_STATE регистра REG_KEY_STATE — это и есть acknowledge
+ * принятой клавиши. Сам код в KEY_DATA остаётся, пока контроллер не
+ * получит следующее нажатие. КЛАД-2 опирается именно на эту семантику:
+ * обработчик читает KEY_DATA один раз, дальше крутит цикл по PAR_INTERF
+ * и видит «нет новых клавиш» по очищенному STATE. */
+static void on_read_key_data(uint16_t addr)
+{
+    if ((addr & 0xFFFEu) == REG_KEY_DATA) {
+        bk_mem[REG_KEY_STATE] &= (uint8_t)~(1u << KEY_STATE_STATE);
+    }
+}
+
 uint8_t bk_read_b(uint16_t addr)
 {
     log_ext_dev_read(addr);
+    on_read_key_data(addr);
     return bk_mem[addr];
 }
 
@@ -230,6 +244,7 @@ uint16_t bk_read_w(uint16_t addr)
      * округляем вниз (на железе был бы trap; контроль будет в Фазе 2). */
     addr &= 0xFFFEu;
     log_ext_dev_read(addr);
+    on_read_key_data(addr);
     return (uint16_t)bk_mem[addr] | ((uint16_t)bk_mem[addr + 1] << 8);
 }
 
