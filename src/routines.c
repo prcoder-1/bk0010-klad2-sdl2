@@ -554,6 +554,84 @@ enum {
     MAP_BASE         = 0014550u,
 };
 
+/* ---------------------------------------------------------------------
+ * R_06632_main_e2 — обработчик ИИ врага #2 ВЕРХНЕГО УРОВНЯ
+ * (0x0d6a..0x0e80, 278 байт).
+ *
+ * Истинная точка входа: вызывается через `JSR pc, @#0x0d6a` с адреса
+ * 0x038e (одна из 7 функций главного цикла, см. таблицу 0x0382..0x039c).
+ * Это и есть JSR-цель — поэтому подмена через диспетчер корректна.
+ *
+ * Структура:
+ *   1. tst @#0x14442 (= char_ptr_hero) — если 0 (герой не существует?),
+ *      ранний RTS.
+ *   2. cmp #0x100, @#0x17376 (= счётчик/таймер какой-то) — если не
+ *      равен 0x100, inc счётчик и RTS.
+ *   3. Иначе fall-through в 0x0d82 — полная логика выбора направления
+ *      и движения врага E2 (см. ниже).
+ *
+ * Декомпиляция блока 0x0d82..0x0e80 ранее была в R_06602; здесь
+ * переписана с байт-аккуратной эмуляцией всех регистров и PSW по
+ * методу R_14030 (через cpu.r[N], push/pop стек). Это сохранили в
+ * комментариях рядом с инструкциями.
+ * ------------------------------------------------------------------- */
+enum {
+    R6632_HERO_PTR_CELL     = 0014442u,  /* word — char_ptr героя */
+    R6632_TIMER_CELL        = 0017376u,  /* word — таймер фрейма E2 */
+    R6632_TIMER_THRESHOLD   = 0000400u,  /* 0o400 = 256 */
+};
+
+void R_06632_main_e2(void)
+{
+    uint16_t v;
+
+    /* 0x0d6a: tst @#0x14442 — устанавливает PSW.N/Z, V=0, C=0. */
+    v = bk_read_w(R6632_HERO_PTR_CELL);
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V | PSW_C);
+    if ((int16_t)v < 0) cpu.psw |= PSW_N;
+    if (v == 0)         cpu.psw |= PSW_Z;
+    /* 0x0d6e: bne 0x0d72 — берётся при v != 0. */
+    if (v == 0) {
+        /* 0x0d70: rts pc */
+        rts_pc();
+        return;
+    }
+
+    /* 0x0d72: cmp #0x0100, @#0x17376 — установка PSW по 0x100 - cell. */
+    {
+        uint16_t cell = bk_read_w(R6632_TIMER_CELL);
+        uint16_t res  = (uint16_t)(R6632_TIMER_THRESHOLD - cell);
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V | PSW_C);
+        if ((int16_t)res < 0) cpu.psw |= PSW_N;
+        if (res == 0)         cpu.psw |= PSW_Z;
+        if ((R6632_TIMER_THRESHOLD ^ cell) & (R6632_TIMER_THRESHOLD ^ res) & 0x8000u)
+            cpu.psw |= PSW_V;
+        if (R6632_TIMER_THRESHOLD < cell) cpu.psw |= PSW_C;
+
+        /* 0x0d78: bne 0x0d7c — берётся при не-равенстве. */
+        if (cell != R6632_TIMER_THRESHOLD) {
+            /* 0x0d7c: inc @#0x17376 — устанавливает PSW.N/Z/V, C unchanged. */
+            uint16_t inc = (uint16_t)(cell + 1u);
+            bk_write_w(R6632_TIMER_CELL, inc);
+            cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+            if ((int16_t)inc < 0) cpu.psw |= PSW_N;
+            if (inc == 0)         cpu.psw |= PSW_Z;
+            if (cell == 0x7FFFu)  cpu.psw |= PSW_V;
+            /* 0x0d80: rts pc */
+            rts_pc();
+            return;
+        }
+        /* Иначе (cell == 0x100): br 0x0d82 (на 0x0d7a — не меняет PSW). */
+    }
+
+    /* === 0x0d82: основной обработчик. Заходим в существующую логику
+     * R_06602, но БЕЗ rts_pc в конце (rts будет на 0x0de6 = реальный
+     * RTS этой функции). */
+    R_06602_enemy_e2_handler();
+    /* R_06602_enemy_e2_handler уже делает rts_pc в конце — это
+     * соответствует rts на 0x0de6. */
+}
+
 void R_06602_enemy_e2_handler(void)
 {
     uint16_t old_code;
