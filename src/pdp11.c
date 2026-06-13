@@ -64,6 +64,7 @@ static const struct {
     { 0010142u, R_10142_anim_tick_e1_idle,    "R_10142" },
     /* R_06602/R_06632: см. комментарий в routines.c. */
     { 0006462u, R_06462_e2_teleport,          "R_06462" },
+    { 0007306u, R_07306_hero_teleport,        "R_07306" },
 };
 
 static routine_fn ab_lookup(uint16_t pc, const char **out_name)
