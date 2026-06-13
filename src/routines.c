@@ -238,101 +238,134 @@ enum {
 };
 
 /* Тело R_14030 без эмуляции RTS — удобно вызывать как inline из других
- * декомпилированных процедур (которые сами потом делают rts_pc). */
+ * декомпилированных процедур (которые сами потом делают rts_pc).
+ *
+ * Переписано буквально по оригиналу: работаем с `cpu.r[N]` напрямую,
+ * push/pop через `cpu.r[6]` и `bk_read_w/bk_write_w`. Это даёт байт-в-
+ * байт совместимость с интерпретатором по регистрам и PSW.
+ *
+ * Финальные значения после возврата:
+ *   r0 — unchanged (read-only)
+ *   r1 — mask_x ± dx_new (последнее присваивание перед вторым XOR)
+ *   r2 — initial r2 caller-а (восстанавливается через `mov (sp)+, r2`)
+ *   r3 — ANIM_TABLE_BASE + new_code*4
+ *   r4 — unchanged
+ *   r5 — unchanged
+ *   PSW.N/Z/V — установлены по итоговому r2 (от `mov (sp)+, r2`)
+ *   PSW.C — unchanged (последняя операция, его меняющая, — где-то ранее) */
 static void R_14030_body(void)
 {
-    /* Параметры функции:
-     *   r0 — новый код кадра.
-     *   r2 — база массива XOR-масок (приходит снаружи; используется для
-     *        второй пары вызовов R_14354).
-     *   r4 — указатель на anim-структуру.
-     * Оригинал начинается с `mov r2, -(sp)` — это сохранение ВХОДНОГО r2,
-     * чтобы `mov (sp), r2` на 0x1854 потом восстановил именно его (а не
-     * `mem[r4+2]`, как казалось при первом разборе). */
-    uint16_t xor_base = cpu.r[2];
+    uint16_t anim, dchar_old, dx_old, dchar_new, dx_new, mask_new;
+    uint16_t phase;
 
-    uint16_t anim    = cpu.r[4];
-    uint16_t old_code = bk_read_w(anim);
-    uint16_t char_ptr = bk_read_w((uint16_t)(anim + 2u));
-    uint16_t phase    = bk_read_w((uint16_t)(anim + 4u));
-    uint16_t x        = bk_read_w((uint16_t)(anim + 6u));
-    uint16_t new_code = cpu.r[0];
+    /* 0x1818: mov r2, -(sp) — сохраняем входной r2 на стеке. */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], cpu.r[2]);
 
-    /* 1) Первый glyph по char_ptr/x. */
-    inline_draw_glyph(char_ptr, x);
+    anim = cpu.r[4];
 
-    /* 2) Считаем смещения по таблице для СТАРОГО кода. */
-    uint16_t row_old = (uint16_t)(ANIM_TABLE_BASE + (unsigned)old_code * 4u);
-    uint16_t dchar_old = bk_read_w((uint16_t)(row_old + 2u));
-    uint16_t dx_old    = bk_read_w((uint16_t)(row_old + 4u));
+    /* 0x181a: mov 2(r4), r2 */
+    cpu.r[2] = bk_read_w((uint16_t)(anim + 2u));
+    /* 0x181e: mov 6(r4), r1 */
+    cpu.r[1] = bk_read_w((uint16_t)(anim + 6u));
 
-    uint16_t r2 = (uint16_t)(char_ptr + dchar_old);
-    uint16_t r1 = (uint16_t)(x        + dx_old);
+    /* 0x1822: jsr pc, R_14302 — первый glyph по (r2, r1). */
+    inline_draw_glyph(cpu.r[2], cpu.r[1]);
 
-    /* Условный «зеркальный» режим для первой половины фазы.
-     * Оригинал: `cmp #024, 4(r4); ble skip_mirror` — ble берётся при
-     *   `24 <= phase`, т.е. phase >= 24. Значит зеркалим когда phase < 24. */
+    /* 0x1826-182c: r3 = ANIM_TABLE_BASE + old_code*4. */
+    cpu.r[3] = (uint16_t)(ANIM_TABLE_BASE + bk_read_w(anim) * 4u);
+    dchar_old = bk_read_w((uint16_t)(cpu.r[3] + 2u));
+    dx_old    = bk_read_w((uint16_t)(cpu.r[3] + 4u));
+
+    /* 0x1830-1834: r2 += dchar_old; r1 += dx_old. */
+    cpu.r[2] = (uint16_t)(cpu.r[2] + dchar_old);
+    cpu.r[1] = (uint16_t)(cpu.r[1] + dx_old);
+
+    /* 0x1838-184c: если phase < 0o24 → зеркалим (вычитаем 2× dchar/dx). */
+    phase = bk_read_w((uint16_t)(anim + 4u));
     if (phase < ANIM_PHASE_THRESHOLD) {
-        r2 = (uint16_t)(r2 - 2u * dchar_old);
-        r1 = (uint16_t)(r1 - 2u * dx_old);
+        cpu.r[2] = (uint16_t)(cpu.r[2] - 2u * dchar_old);
+        cpu.r[1] = (uint16_t)(cpu.r[1] - 2u * dx_old);
     }
 
-    /* 3) Второй glyph. */
-    inline_draw_glyph(r2, r1);
+    /* 0x1850: jsr pc, R_14302 — второй glyph. */
+    inline_draw_glyph(cpu.r[2], cpu.r[1]);
 
-    /* 4) Обновление структуры по новому коду. */
-    uint16_t row_new = (uint16_t)(ANIM_TABLE_BASE + (unsigned)new_code * 4u);
-    uint16_t mask_new  = bk_read_w(row_new);
-    uint16_t dchar_new = bk_read_w((uint16_t)(row_new + 2u));
-    uint16_t dx_new    = bk_read_w((uint16_t)(row_new + 4u));
+    /* 0x1854: mov (sp), r2 — peek, восстанавливаем входной r2. */
+    cpu.r[2] = bk_read_w(cpu.r[6]);
 
-    if (new_code != old_code) {
-        /* Сменили направление — фаза := 24 (готовимся к bit-тесту). */
-        phase = ANIM_PHASE_THRESHOLD;
+    /* 0x1856-185c: r3 = ANIM_TABLE_BASE + new_code*4. */
+    cpu.r[3] = (uint16_t)(ANIM_TABLE_BASE + cpu.r[0] * 4u);
+    mask_new  = bk_read_w(cpu.r[3]);
+    dchar_new = bk_read_w((uint16_t)(cpu.r[3] + 2u));
+    dx_new    = bk_read_w((uint16_t)(cpu.r[3] + 4u));
+
+    /* 0x1860-1892: state-машина обновления фазы. */
+    if (cpu.r[0] != bk_read_w(anim)) {
+        /* new != old → phase := 0o24. */
+        bk_write_w((uint16_t)(anim + 4u), ANIM_PHASE_THRESHOLD);
     } else if (phase <= ANIM_PHASE_THRESHOLD) {
-        /* phase <= 24 → продолжаем счётчик (bge берётся, goto 0x188c).
-         * Граница включающая: `cmp #024, 4(r4); bge` срабатывает при
-         * 24 >= phase, т.е. phase <= 24. */
-        phase = (uint16_t)(phase + ANIM_PHASE_STEP);
+        /* phase <= 0o24 → phase += 0o12. */
+        bk_write_w((uint16_t)(anim + 4u),
+                   (uint16_t)(phase + ANIM_PHASE_STEP));
     } else {
-        /* phase > 24 → bit-тест: если mask(new_code) пересекается со
-         * словом по char_ptr, продвигаем анимацию (сброс фазы, шаг
-         * char_ptr/X), иначе ничего не меняем. */
-        uint16_t cur_word = bk_read_w(char_ptr);
-        if (mask_new & cur_word) {
-            phase = 0;
-            char_ptr = (uint16_t)(char_ptr + dchar_new);
-            x        = (uint16_t)(x        + dx_new);
-            bk_write_w((uint16_t)(anim + 2u), char_ptr);
-            bk_write_w((uint16_t)(anim + 6u), x);
+        /* phase > 0o24 → bit-тест и шаг анимации, если есть. */
+        uint16_t cur = bk_read_w(bk_read_w((uint16_t)(anim + 2u)));
+        if (mask_new & cur) {
+            bk_write_w((uint16_t)(anim + 4u), 0);
+            bk_write_w((uint16_t)(anim + 2u),
+                       (uint16_t)(bk_read_w((uint16_t)(anim + 2u)) + dchar_new));
+            bk_write_w((uint16_t)(anim + 6u),
+                       (uint16_t)(bk_read_w((uint16_t)(anim + 6u)) + dx_new));
         }
     }
+    /* 0x1892: mov r0, (r4). */
+    bk_write_w(anim, cpu.r[0]);
 
-    /* Сохраняем новый код и фазу. */
-    bk_write_w(anim,                  new_code);
-    bk_write_w((uint16_t)(anim + 4u), phase);
+    /* 0x1894-1896: r2 += (r4); r2 += 4(r4). */
+    cpu.r[2] = (uint16_t)(cpu.r[2] + bk_read_w(anim));
+    cpu.r[2] = (uint16_t)(cpu.r[2] + bk_read_w((uint16_t)(anim + 4u)));
 
-    /* 5) Указатель на XOR-маску для (new_code, phase).
-     *    Оригинал: на 0x1854 делает `mov (sp), r2` — восстанавливает
-     *    ВХОДНОЕ значение r2 (xor_base, сохранённое в самом начале на
-     *    0x1818). Затем `add (r4), r2; add 4(r4), r2`, где (r4)=new_code
-     *    (только что записан) и 4(r4)=обновлённая фаза. */
-    uint16_t mask_ptr = (uint16_t)(xor_base + new_code + phase);
-    uint16_t mask_x   = bk_read_w((uint16_t)(anim + 6u)); /* свежий X */
+    /* 0x189a: mov 6(r4), r1. */
+    cpu.r[1] = bk_read_w((uint16_t)(anim + 6u));
 
-    /* 6) XOR-маска первая. */
-    inline_xor_sprite(mask_ptr, mask_x);
+    /* 0x189e: jsr pc, R_14354 — первый XOR-спрайт. */
+    inline_xor_sprite(cpu.r[2], cpu.r[1]);
 
-    /* 7) Смещение для второй XOR-маски — зеркалим при phase < 24,
-     * по той же логике что в шаге 4. */
-    uint16_t mx2 = (uint16_t)(mask_x + dx_new);
+    /* 0x18a2-18b2: r1 += dx_new; если phase < 0o24 → r1 -= 2*dx_new. */
+    cpu.r[1] = (uint16_t)(cpu.r[1] + dx_new);
+    /* «свежая» phase нужна для проверки — после возможного обновления выше. */
+    phase = bk_read_w((uint16_t)(anim + 4u));
     if (phase < ANIM_PHASE_THRESHOLD) {
-        mx2 = (uint16_t)(mx2 - 2u * dx_new);
+        cpu.r[1] = (uint16_t)(cpu.r[1] - 2u * dx_new);
     }
-    uint16_t mp2 = (uint16_t)(mask_ptr + XOR_MASK_STRIDE);
 
-    /* 8) XOR-маска вторая. */
-    inline_xor_sprite(mp2, mx2);
+    /* 0x18b6: r2 += 0o50. */
+    cpu.r[2] = (uint16_t)(cpu.r[2] + XOR_MASK_STRIDE);
+
+    /* 0x18ba: jsr pc, R_14354 — второй XOR-спрайт. */
+    inline_xor_sprite(cpu.r[2], cpu.r[1]);
+
+    /* PSW.C: оригинал устанавливает её последним `add #100, r1` 8-й
+     * итерации цикла внутри второго R_14354. В нашем inline_xor_sprite
+     * r1 локальный, в cpu.r[1] он не записывается — поэтому эмулируем
+     * переполнение явно от текущего cpu.r[1] (= initial X второго xor):
+     *   r1_7 = r1 + 7*100;  r1_8 = r1_7 + 100;  C = (r1_8 < r1_7).
+     * В редких случаях (r1 близок к 0xFFFF), последний add переполняется
+     * → C=1; иначе → C=0. mov (sp)+, r2 PSW.C не трогает. */
+    {
+        uint16_t r1_prev = (uint16_t)(cpu.r[1] + 7u * SCREEN_ROW_BYTES);
+        uint16_t r1_last = (uint16_t)(r1_prev  + SCREEN_ROW_BYTES);
+        if (r1_last < r1_prev) cpu.psw |= PSW_C;
+        else                    cpu.psw &= (uint16_t)~PSW_C;
+    }
+
+    /* 0x18be: mov (sp)+, r2 — pop. Устанавливает PSW.N/Z/V по итоговому r2. */
+    cpu.r[2] = bk_read_w(cpu.r[6]);
+    cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+    cpu.psw  = (uint16_t)(cpu.psw & ~(PSW_N | PSW_Z | PSW_V));
+    if ((int16_t)cpu.r[2] < 0) cpu.psw |= PSW_N;
+    if (cpu.r[2] == 0)         cpu.psw |= PSW_Z;
 }
 
 void R_14030_draw_compound_sprite(void)
@@ -371,24 +404,73 @@ void R_14030_draw_compound_sprite(void)
 static void anim_tick(uint16_t xor_base, uint16_t anim,
                       uint16_t counter_addr, int byte_op, int16_t threshold)
 {
+    /* mov #xor_base, r2 — N=msb, Z=(==0), V=0, C unchanged. */
     cpu.r[2] = xor_base;
-    cpu.r[4] = anim;
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+    if (xor_base & 0x8000u) cpu.psw |= PSW_N;
+    if (xor_base == 0)      cpu.psw |= PSW_Z;
 
+    /* mov #anim, r4 — те же эффекты. */
+    cpu.r[4] = anim;
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+    if (anim & 0x8000u) cpu.psw |= PSW_N;
+    if (anim == 0)      cpu.psw |= PSW_Z;
+
+    /* cmpb/cmp #threshold, @#counter_addr — устанавливает PSW по
+     * результату вычитания threshold - cnt. */
     int16_t cnt = byte_op
         ? (int16_t)(int8_t)bk_read_b(counter_addr)
         : (int16_t)bk_read_w(counter_addr);
+    {
+        int16_t res = (int16_t)(threshold - cnt);
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V | PSW_C);
+        if (res < 0)         cpu.psw |= PSW_N;
+        if (res == 0)        cpu.psw |= PSW_Z;
+        if (byte_op) {
+            if ((uint16_t)((threshold ^ cnt) & (threshold ^ res) & 0x80u))
+                cpu.psw |= PSW_V;
+            if ((uint16_t)(uint8_t)threshold < (uint16_t)(uint8_t)cnt)
+                cpu.psw |= PSW_C;
+        } else {
+            if ((uint16_t)((threshold ^ cnt) & (threshold ^ res) & 0x8000u))
+                cpu.psw |= PSW_V;
+            if ((uint16_t)threshold < (uint16_t)cnt)
+                cpu.psw |= PSW_C;
+        }
+    }
 
+    /* bge берётся при threshold >= cnt (т.е. PSW.N == PSW.V). */
     if (threshold >= cnt) {
-        /* `bge` берётся → инкремент счётчика. */
+        /* incb/inc @#counter_addr — N=msb, Z=(==0), V=overflow, C unchanged. */
         int16_t nxt = (int16_t)(cnt + 1);
-        if (byte_op) bk_write_b(counter_addr, (uint8_t)nxt);
-        else         bk_write_w(counter_addr, (uint16_t)nxt);
+        if (byte_op) {
+            uint8_t r = (uint8_t)nxt;
+            bk_write_b(counter_addr, r);
+            cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+            if (r & 0x80u) cpu.psw |= PSW_N;
+            if (r == 0)    cpu.psw |= PSW_Z;
+            if ((uint8_t)cnt == 0x7Fu) cpu.psw |= PSW_V;
+        } else {
+            uint16_t r = (uint16_t)nxt;
+            bk_write_w(counter_addr, r);
+            cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+            if (r & 0x8000u) cpu.psw |= PSW_N;
+            if (r == 0)      cpu.psw |= PSW_Z;
+            if ((uint16_t)cnt == 0x7FFFu) cpu.psw |= PSW_V;
+        }
     } else {
-        /* Иначе — нарисовать спрайт и сбросить счётчик. */
+        /* jsr pc, R_14030 + clrb/clr.
+         * R_14030_body уже корректно эмулирует все регистры и PSW
+         * (N/Z/V/C по итоговому r2 + сброс C). После него идёт
+         * clrb/clr — это финальная инструкция, она и определяет PSW. */
         R_14030_body();
         if (byte_op) bk_write_b(counter_addr, 0);
         else         bk_write_w(counter_addr, 0);
+        /* PSW по clr: N=0, Z=1, V=0, C=0. */
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_V | PSW_C);
+        cpu.psw |= PSW_Z;
     }
+    /* `br out` и `rts pc` не трогают PSW. */
 }
 
 /* 0o07202 (0x0e82): враг #2 в движении, byte-счётчик, threshold=7,
@@ -403,7 +485,10 @@ void R_07202_anim_tick_e2_move(void)
  * r0 жёстко = 8 (idle-направление). */
 void R_07242_anim_tick_e2_idle(void)
 {
+    /* mov #10, r0 — устанавливает PSW.N/Z/V (0o10 = 8 > 0, msb=0). */
     cpu.r[0] = 0010u;
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+    /* msb(0o10) = 0 → N=0, 0o10 != 0 → Z=0. */
     anim_tick(0021760u, 0014440u, 0017370u, 1, 4);
     rts_pc();
 }
@@ -419,6 +504,7 @@ void R_10102_anim_tick_e1_move(void)
 void R_10142_anim_tick_e1_idle(void)
 {
     cpu.r[0] = 0010u;
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
     anim_tick(0021760u, 0014430u, 0017364u, 0, 4);
     rts_pc();
 }
