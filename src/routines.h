@@ -46,7 +46,6 @@ void R_07202_anim_tick_e2_move(void);
 void R_07242_anim_tick_e2_idle(void);
 void R_10102_anim_tick_e1_move(void);
 void R_10142_anim_tick_e1_idle(void);
-void R_06602_enemy_e2_handler(void);
 void R_06632_main_e2(void);
 void R_06462_e2_teleport(void);
 void R_07306_hero_teleport(void);

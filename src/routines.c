@@ -1011,219 +1011,232 @@ L_idle_set6:
 }
 
 /* ---------------------------------------------------------------------
- * R_06632_main_e2 — обработчик ИИ врага #2 ВЕРХНЕГО УРОВНЯ
- * (0x0d6a..0x0e80, 278 байт).
+ * R_06632_main_e2 — обработчик ИИ врага E2 ВЕРХНЕГО УРОВНЯ
+ * (0x0d6a..0x0e80, 278 байт). Изоморфен R_07462 с отличиями:
+ *   - В начале dead-check `tst @#14442; bne; rts` (если char_ptr_e2==0,
+ *     ранний выход — E1 такой проверки не имеет).
+ *   - Таймер: `cmp #400, @#17376; bne inc+rts; br main` — main path
+ *     срабатывает когда cell == 0o400 точно (vs E1 cell > 0o400).
+ *   - Адреса: anim_e2=0o14440, таймер @#17376, hero_target=@#14432.
+ *   - JSR R_07202/R_07242 вместо R_10102/R_10142.
  *
- * Истинная точка входа: вызывается через `JSR pc, @#0x0d6a` с адреса
- * 0x038e (одна из 7 функций главного цикла, см. таблицу 0x0382..0x039c).
- * Это и есть JSR-цель — поэтому подмена через диспетчер корректна.
- *
- * Структура:
- *   1. tst @#0x14442 (= char_ptr_hero) — если 0 (герой не существует?),
- *      ранний RTS.
- *   2. cmp #0x100, @#0x17376 (= счётчик/таймер какой-то) — если не
- *      равен 0x100, inc счётчик и RTS.
- *   3. Иначе fall-through в 0x0d82 — полная логика выбора направления
- *      и движения врага E2 (см. ниже).
- *
- * Декомпиляция блока 0x0d82..0x0e80 ранее была в R_06602; здесь
- * переписана с байт-аккуратной эмуляцией всех регистров и PSW по
- * методу R_14030 (через cpu.r[N], push/pop стек). Это сохранили в
- * комментариях рядом с инструкциями.
+ * Точка входа: вызывается через `JSR pc, @#0x0d6a` с адреса 0x038e
+ * (одна из 7 функций главного цикла).
  * ------------------------------------------------------------------- */
 enum {
-    R6632_HERO_PTR_CELL     = 0014442u,  /* word — char_ptr героя */
-    R6632_TIMER_CELL        = 0017376u,  /* word — таймер фрейма E2 */
-    R6632_TIMER_THRESHOLD   = 0000400u,  /* 0o400 = 256 */
+    TIMER_E2           = 0017376u,
+    HERO_TARGET_E2     = 0014432u,
+    TIMER_THRESHOLD_E2 = 0000400u,
 };
 
 void R_06632_main_e2(void)
 {
     uint16_t v;
 
-    /* 0x0d6a: tst @#0x14442 — устанавливает PSW.N/Z, V=0, C=0. */
-    v = bk_read_w(R6632_HERO_PTR_CELL);
+    /* === dead-check: tst @#14442; bne 0x0d72; rts === */
+    v = bk_read_w(ANIM_E2_CHAR_PTR);
     cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V | PSW_C);
     if ((int16_t)v < 0) cpu.psw |= PSW_N;
     if (v == 0)         cpu.psw |= PSW_Z;
-    /* 0x0d6e: bne 0x0d72 — берётся при v != 0. */
-    if (v == 0) {
-        /* 0x0d70: rts pc */
+    if (v == 0) { rts_pc(); return; }
+
+    /* === Таймер: cmp #400, @#17376; bne inc+rts === */
+    v = bk_read_w(TIMER_E2);
+    psw_cmp_w(TIMER_THRESHOLD_E2, v);
+    if (v != TIMER_THRESHOLD_E2) {
+        uint16_t nxt = (uint16_t)(v + 1);
+        bk_write_w(TIMER_E2, nxt);
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+        if ((int16_t)nxt < 0) cpu.psw |= PSW_N;
+        if (nxt == 0)         cpu.psw |= PSW_Z;
+        if (v == 0x7FFFu)     cpu.psw |= PSW_V;
         rts_pc();
         return;
     }
 
-    /* 0x0d72: cmp #0x0100, @#0x17376 — установка PSW по 0x100 - cell. */
+    /* === main path init === */
+    cpu.r[5] = ANIM_E2;
+    psw_nz_w(cpu.r[5]);
+    cpu.r[4] = ANIM_HERO_CP_PTR;
+    psw_nz_w(cpu.r[4]);
     {
-        uint16_t cell = bk_read_w(R6632_TIMER_CELL);
-        uint16_t res  = (uint16_t)(R6632_TIMER_THRESHOLD - cell);
-        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V | PSW_C);
+        uint16_t old_code = bk_read_w(cpu.r[5]);
+        cpu.r[5] = (uint16_t)(cpu.r[5] + 2u);
+        psw_cmp_w(0010u, old_code);
+        if (old_code == 0010u) goto L_e2_idle;
+    }
+
+    cpu.r[0] = bk_read_w(cpu.r[5]);
+    psw_nz_w(cpu.r[0]);
+    cpu.r[0] = (uint16_t)(cpu.r[0] - MAP_BASE);
+    cpu.r[0] &= 0077u;
+    cpu.r[1] = bk_read_w(cpu.r[4]);
+    psw_nz_w(cpu.r[1]);
+    cpu.r[1] = (uint16_t)(cpu.r[1] - MAP_BASE);
+    cpu.r[1] &= 0077u;
+    psw_cmp_w(cpu.r[0], cpu.r[1]);
+    if (cpu.r[0] == cpu.r[1]) goto L_e2_vertical;
+    if ((int16_t)cpu.r[0] > (int16_t)cpu.r[1]) goto L_e2_try_left;
+
+    /* try_right */
+    cpu.r[1] = bk_read_w(cpu.r[5]);
+    psw_nz_w(cpu.r[1]);
+    {
+        uint16_t cell = bk_read_w(cpu.r[1]);
+        uint16_t res = (uint16_t)(0100000u & cell);
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
         if ((int16_t)res < 0) cpu.psw |= PSW_N;
-        if (res == 0)         cpu.psw |= PSW_Z;
-        if ((R6632_TIMER_THRESHOLD ^ cell) & (R6632_TIMER_THRESHOLD ^ res) & 0x8000u)
-            cpu.psw |= PSW_V;
-        if (R6632_TIMER_THRESHOLD < cell) cpu.psw |= PSW_C;
-
-        /* 0x0d78: bne 0x0d7c — берётся при не-равенстве. */
-        if (cell != R6632_TIMER_THRESHOLD) {
-            /* 0x0d7c: inc @#0x17376 — устанавливает PSW.N/Z/V, C unchanged. */
-            uint16_t inc = (uint16_t)(cell + 1u);
-            bk_write_w(R6632_TIMER_CELL, inc);
-            cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
-            if ((int16_t)inc < 0) cpu.psw |= PSW_N;
-            if (inc == 0)         cpu.psw |= PSW_Z;
-            if (cell == 0x7FFFu)  cpu.psw |= PSW_V;
-            /* 0x0d80: rts pc */
-            rts_pc();
-            return;
-        }
-        /* Иначе (cell == 0x100): br 0x0d82 (на 0x0d7a — не меняет PSW). */
+        if (res == 0)        cpu.psw |= PSW_Z;
+        if (res == 0) goto L_e2_vertical;
     }
+    {
+        uint8_t bv = bk_read_b((uint16_t)(cpu.r[1] + 2u));
+        uint8_t res = (uint8_t)(0011u - bv);
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V | PSW_C);
+        if ((int8_t)res < 0) cpu.psw |= PSW_N;
+        if (res == 0)        cpu.psw |= PSW_Z;
+        if ((uint8_t)((0011u ^ bv) & (0011u ^ res) & 0x80u)) cpu.psw |= PSW_V;
+        if ((uint8_t)0011u < bv) cpu.psw |= PSW_C;
+        if (bv == 0011u) goto L_e2_vertical;
+    }
+    cpu.r[1] = (uint16_t)(cpu.r[1] + 2u);
+    v = bk_read_w(HERO_TARGET_E2);
+    psw_cmp_w(cpu.r[1], v);
+    if (cpu.r[1] == v) goto L_e2_vertical;
+    cpu.r[0] = 0;
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_V | PSW_C);
+    cpu.psw |= PSW_Z;
+    anim_tick(0021760u, ANIM_E2, 0017366u, 1, 7);
 
-    /* === 0x0d82: основной обработчик. Заходим в существующую логику
-     * R_06602, но БЕЗ rts_pc в конце (rts будет на 0x0de6 = реальный
-     * RTS этой функции). */
-    R_06602_enemy_e2_handler();
-    /* R_06602_enemy_e2_handler уже делает rts_pc в конце — это
-     * соответствует rts на 0x0de6. */
-}
-
-void R_06602_enemy_e2_handler(void)
-{
-    uint16_t old_code;
-    uint16_t cp_e2, cp_hero;
-    int16_t  e2_idx, hero_idx;
-    uint16_t cell, neighbour;
-
-    /* 0d82-0d8a: init + if (*r5 == 8) goto idle.
-     * Оригинал на 0d82-0d88 делает `mov #14440, r5; mov #14422, r4`,
-     * а на 0d8a — `cmp #10, (r5)+` (autoinc) → r5 становится = 0o14442.
-     * Эти значения регистров остаются актуальными во ВСЕХ возможных
-     * RTS-выходах функции (никакая ветка их потом не перезаписывает на
-     * что-то иное). Caller-код **может** опираться на них — поэтому
-     * в C-замене обязательно эмулируем эти финальные значения cpu.r[4]
-     * и cpu.r[5], даже если внутренней логике они не нужны. */
-    cpu.r[5] = ANIM_E2_CHAR_PTR;   /* = 0o14442, post-autoinc */
-    cpu.r[4] = ANIM_HERO_CP_PTR;   /* = 0o14422 (но позже перезаписывается на 0o14440 в каждой ветке) */
-
-    old_code = bk_read_w(ANIM_E2);
-    if (old_code == 0010u) goto L_idle;
-
-    /* 0d90-0da0: горизонтальная позиция e2 и героя. */
-    cp_e2   = bk_read_w(ANIM_E2_CHAR_PTR);
-    cp_hero = bk_read_w(ANIM_HERO_CP_PTR);
-    e2_idx   = (int16_t)((cp_e2   - MAP_BASE) & 077u);
-    hero_idx = (int16_t)((cp_hero - MAP_BASE) & 077u);
-
-    /* 0da4-0da8: cmp r0,r1; beq vertical; bgt try_left. */
-    if (e2_idx == hero_idx) goto L_vertical;
-    if (e2_idx >  hero_idx) goto L_try_left;
-
-    /* === 0daa-0dc6: e2 слева от hero → пробуем идти вправо === */
-    cp_e2 = bk_read_w(ANIM_E2_CHAR_PTR);
-    cell = bk_read_w(cp_e2);
-    if ((cell & 0100000u) == 0) goto L_vertical;       /* нет «можно вправо» */
-    if (bk_read_b((uint16_t)(cp_e2 + 2u)) == 011)
-        goto L_vertical;                                /* справа — лестница */
-    neighbour = (uint16_t)(cp_e2 + 2u);
-    if (neighbour == bk_read_w(HERO_TARGET_PTR))
-        goto L_vertical;                                /* там стоит герой */
-    cpu.r[0] = 0;                                       /* направление = вправо */
-    /* fall through в main_tail */
-
-L_main_tail:
-    /* В этой точке оригинал на 0dca делает `mov #14440, r4` — что
-     * соответствует выходному значению r4 = ANIM_E2 во всех RTS,
-     * проходящих через main_tail. (Все остальные пути выходят раньше
-     * — но **в каждом** в какой-то момент идёт `mov #14440, r4`, а
-     * `mov #14440, r5` нет, поэтому r5 уже выставлен в начале.) */
+L_e2_main_tail:
     cpu.r[4] = ANIM_E2;
-    /* 0dc6-0de6: jsr R_07202 + проверка bit 04000 + jsr R_07242 + RTS.
-     * Используем `anim_tick` напрямую (не публичную обёртку
-     * R_07202_anim_tick_e2_move), потому что та сама делает rts_pc —
-     * у нас в R_06602 «JSR-пуша» не было, и rts снял бы лишнее со
-     * стека. */
-    anim_tick(0021760u, 0014440u, 0017366u, 1, 7);  /* = тело R_07202 */
-    /* После R_07202 — caller перезаписывает r4 = 014440 (anim_e2_code).
-     * `bit #4000, @2(r4)` = test bit 04000 в слове по mem[r4+2] =
-     * char_ptr_e2. Если стоит — выход. */
-    cp_e2 = bk_read_w(ANIM_E2_CHAR_PTR);
-    if (bk_read_w(cp_e2) & 04000u) return;
-    /* mov (r5), r1; add #100, r1; cmp r1, @#14432; beq exit */
+    psw_nz_w(cpu.r[4]);
     {
-        uint16_t below = (uint16_t)(bk_read_w(ANIM_E2_CHAR_PTR) + 0100u);
-        if (below == bk_read_w(HERO_TARGET_PTR)) return;
+        uint16_t cp = bk_read_w((uint16_t)(cpu.r[4] + 2u));
+        uint16_t cell = bk_read_w(cp);
+        uint16_t res = (uint16_t)(0004000u & cell);
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+        if ((int16_t)res < 0) cpu.psw |= PSW_N;
+        if (res == 0)        cpu.psw |= PSW_Z;
+        if (res != 0) { rts_pc(); return; }
     }
-    anim_tick(0021760u, 0014440u, 0017370u, 1, 4);  /* = тело R_07242 */
+    cpu.r[1] = bk_read_w(cpu.r[5]);
+    cpu.r[1] = (uint16_t)(cpu.r[1] + 0100u);
+    v = bk_read_w(HERO_TARGET_E2);
+    psw_cmp_w(cpu.r[1], v);
+    if (cpu.r[1] == v) { rts_pc(); return; }
+    cpu.r[0] = 0010u;
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+    anim_tick(0021760u, ANIM_E2, 0017370u, 1, 4);
+    rts_pc();
     return;
 
-    /* === 0de8: вертикальное движение === */
-L_vertical:
-    cp_e2   = bk_read_w(ANIM_E2_CHAR_PTR);
-    cp_hero = bk_read_w(ANIM_HERO_CP_PTR);
-    /* sub #14550, r0; bic #77, r0 → r0 &= 0177700 (высокие биты =
-     * номер строки × 0100). */
-    e2_idx   = (int16_t)((cp_e2   - MAP_BASE) & 0177700u);
-    hero_idx = (int16_t)((cp_hero - MAP_BASE) & 0177700u);
+L_e2_vertical:
+    cpu.r[0] = bk_read_w(cpu.r[5]);
+    psw_nz_w(cpu.r[0]);
+    cpu.r[0] = (uint16_t)(cpu.r[0] - MAP_BASE);
+    cpu.r[0] &= 0177700u;
+    cpu.r[1] = bk_read_w(cpu.r[4]);
+    psw_nz_w(cpu.r[1]);
+    cpu.r[1] = (uint16_t)(cpu.r[1] - MAP_BASE);
+    cpu.r[1] &= 0177700u;
+    psw_cmp_w(cpu.r[0], cpu.r[1]);
+    if (cpu.r[0] == cpu.r[1]) goto L_e2_main_tail;
+    if ((int16_t)cpu.r[0] > (int16_t)cpu.r[1]) goto L_e2_try_up;
 
-    if (e2_idx == hero_idx) goto L_main_tail;          /* same row */
-    if (e2_idx >  hero_idx) goto L_try_up;
-
-    /* e2 выше hero → пробуем идти вниз (r0=6) */
-    cp_e2 = bk_read_w(ANIM_E2_CHAR_PTR);
-    cell = bk_read_w(cp_e2);
-    if ((cell & 010000u) == 0) goto L_main_tail;       /* нет «можно вниз» */
+    /* try_down */
+    cpu.r[1] = bk_read_w(cpu.r[5]);
+    psw_nz_w(cpu.r[1]);
     {
-        uint16_t below = (uint16_t)(cp_e2 + 0100u);
-        if (below == bk_read_w(HERO_TARGET_PTR))
-            goto L_main_tail;
+        uint16_t cell = bk_read_w(cpu.r[1]);
+        uint16_t res = (uint16_t)(0010000u & cell);
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+        if ((int16_t)res < 0) cpu.psw |= PSW_N;
+        if (res == 0)        cpu.psw |= PSW_Z;
+        if (res == 0) goto L_e2_main_tail;
     }
+    cpu.r[1] = (uint16_t)(cpu.r[1] + 0100u);
+    v = bk_read_w(HERO_TARGET_E2);
+    psw_cmp_w(cpu.r[1], v);
+    if (cpu.r[1] == v) goto L_e2_main_tail;
     cpu.r[0] = 6;
-    anim_tick(0021760u, 0014440u, 0017366u, 1, 7);  /* = тело R_07202 */
-    goto L_main_tail;
+    psw_nz_w(cpu.r[0]);
+    anim_tick(0021760u, ANIM_E2, 0017366u, 1, 7);
+    goto L_e2_main_tail;
 
-    /* === 0e1e: e2 справа от hero → пробуем идти влево (r0=2) === */
-L_try_left:
-    cp_e2 = bk_read_w(ANIM_E2_CHAR_PTR);
-    cell = bk_read_w(cp_e2);
-    if ((cell & 040000u) == 0) goto L_main_tail;
-    /* cmpb #11, 0177776(r1) — байт по адресу r1-2 (слева от текущей). */
-    if (bk_read_b((uint16_t)(cp_e2 - 2u)) == 011) goto L_main_tail;
-    neighbour = (uint16_t)(cp_e2 - 2u);
-    if (neighbour == bk_read_w(HERO_TARGET_PTR)) goto L_main_tail;
+L_e2_try_left:
+    cpu.r[1] = bk_read_w(cpu.r[5]);
+    psw_nz_w(cpu.r[1]);
+    {
+        uint16_t cell = bk_read_w(cpu.r[1]);
+        uint16_t res = (uint16_t)(0040000u & cell);
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+        if ((int16_t)res < 0) cpu.psw |= PSW_N;
+        if (res == 0)        cpu.psw |= PSW_Z;
+        if (res == 0) goto L_e2_vertical;
+    }
+    {
+        uint8_t bv = bk_read_b((uint16_t)(cpu.r[1] - 2u));
+        uint8_t res = (uint8_t)(0011u - bv);
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V | PSW_C);
+        if ((int8_t)res < 0) cpu.psw |= PSW_N;
+        if (res == 0)        cpu.psw |= PSW_Z;
+        if ((uint8_t)((0011u ^ bv) & (0011u ^ res) & 0x80u)) cpu.psw |= PSW_V;
+        if ((uint8_t)0011u < bv) cpu.psw |= PSW_C;
+        if (bv == 0011u) goto L_e2_vertical;
+    }
+    cpu.r[1] = (uint16_t)(cpu.r[1] - 2u);
+    v = bk_read_w(HERO_TARGET_E2);
+    psw_cmp_w(cpu.r[1], v);
+    if (cpu.r[1] == v) goto L_e2_vertical;
     cpu.r[0] = 2;
-    anim_tick(0021760u, 0014440u, 0017366u, 1, 7);  /* = тело R_07202 */
-    goto L_main_tail;
+    psw_nz_w(cpu.r[0]);
+    anim_tick(0021760u, ANIM_E2, 0017366u, 1, 7);
+    goto L_e2_main_tail;
 
-    /* === 0e42: пробуем вверх (r0=4) === */
-L_try_up:
-    cp_e2 = bk_read_w(ANIM_E2_CHAR_PTR);
-    cell = bk_read_w(cp_e2);
-    if ((cell & 020000u) == 0) goto L_main_tail;
+L_e2_try_up:
+    cpu.r[1] = bk_read_w(cpu.r[5]);
+    psw_nz_w(cpu.r[1]);
     {
-        uint16_t above = (uint16_t)(cp_e2 - 0100u);
-        if (above == bk_read_w(HERO_TARGET_PTR)) goto L_main_tail;
+        uint16_t cell = bk_read_w(cpu.r[1]);
+        uint16_t res = (uint16_t)(0020000u & cell);
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+        if ((int16_t)res < 0) cpu.psw |= PSW_N;
+        if (res == 0)        cpu.psw |= PSW_Z;
+        if (res == 0) goto L_e2_main_tail;
     }
+    cpu.r[1] = (uint16_t)(cpu.r[1] - 0100u);
+    v = bk_read_w(HERO_TARGET_E2);
+    psw_cmp_w(cpu.r[1], v);
+    if (cpu.r[1] == v) goto L_e2_main_tail;
     cpu.r[0] = 4;
-    anim_tick(0021760u, 0014440u, 0017366u, 1, 7);  /* = тело R_07202 */
-    goto L_main_tail;
+    psw_nz_w(cpu.r[0]);
+    anim_tick(0021760u, ANIM_E2, 0017366u, 1, 7);
+    goto L_e2_main_tail;
 
-    /* === 0e5e: idle-секция === */
-L_idle:
+L_e2_idle:
+    cpu.r[1] = bk_read_w(cpu.r[5]);
+    psw_nz_w(cpu.r[1]);
+    cpu.r[1] = (uint16_t)(cpu.r[1] + 0100u);
+    v = bk_read_w(HERO_TARGET_E2);
+    psw_cmp_w(cpu.r[1], v);
+    if (cpu.r[1] == v) goto L_e2_idle_set6;
+    cpu.r[0] = 0010u;
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+    anim_tick(0021760u, ANIM_E2, 0017370u, 1, 4);
     {
-        uint16_t below = (uint16_t)(bk_read_w(ANIM_E2_CHAR_PTR) + 0100u);
-        if (below == bk_read_w(HERO_TARGET_PTR)) goto L_idle_set6;
-        cpu.r[0] = 0010u;
-        anim_tick(0021760u, 0014440u, 0017370u, 1, 4);  /* = тело R_07242 */
-        /* bit #2000, @2(r4) — test bit 02000 в mem[char_ptr_e2]. Если
-         * стоит — НЕ ставим code=6, выход. */
-        cp_e2 = bk_read_w(ANIM_E2_CHAR_PTR);
-        if (bk_read_w(cp_e2) & 02000u) return;
+        uint16_t cp = bk_read_w((uint16_t)(cpu.r[4] + 2u));
+        uint16_t cell = bk_read_w(cp);
+        uint16_t res = (uint16_t)(0002000u & cell);
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+        if ((int16_t)res < 0) cpu.psw |= PSW_N;
+        if (res == 0)        cpu.psw |= PSW_Z;
+        if (res != 0) { rts_pc(); return; }
     }
-L_idle_set6:
-    /* mov #6, @#14440 — устанавливаем код направления = 6 (вниз). */
-    bk_write_w(ANIM_E2, 6u);
-    return;
+L_e2_idle_set6:
+    bk_write_w(ANIM_E2, 6);
+    psw_nz_w(6);
+    rts_pc();
 }
 
 /* ---------------------------------------------------------------------
@@ -1246,6 +1259,7 @@ static const struct {
      * причине (snapshot/restore работают только для функций с честной
      * JSR/RTS-семантикой). */
     { 0006462u, R_06462_e2_teleport },
+    { 0006632u, R_06632_main_e2 },
     { 0007202u, R_07202_anim_tick_e2_move },
     { 0007242u, R_07242_anim_tick_e2_idle },
     { 0007306u, R_07306_hero_teleport },
