@@ -1330,6 +1330,132 @@ void R_15ce_clear_cell(void)
     rts_pc();
 }
 
+/* ---------------------------------------------------------------------
+ * R_0888_int_to_dec — преобразовать count 16-битных чисел в 6-байтовые
+ * decimal-ASCII строки. (0x0888..0x08fe, 120 байт, ~30 инструкций.)
+ *
+ * Параметры через стек caller-а (после JSR):
+ *   sp+0:  PC возврата
+ *   sp+2:  buffer_ptr — куда писать (6 байт на число)
+ *   sp+4:  source_ptr — массив 16-битных чисел
+ *   sp+6:  count      — число чисел
+ *   sp+8..sp+19: 12 байт зарезервированы под save-регистров
+ *                (выделены caller-ом через `sub #12, sp`)
+ *
+ * Формат каждого слота:
+ *   - 6 байт, заполняются справа налево (digit-by-digit + знак + пробелы).
+ *   - Слот «12345»  → "  1234"  (нет, ширина 6 → " 12345" если 5 цифр).
+ *   - Слот -123    → "  -123".
+ *
+ * Алгоритм:
+ *   for каждое из count чисел:
+ *     прочитать число num;
+ *     если < 0 → запомнить флаг, num = -num;
+ *     извлечь digits справа налево через num %= 10, num /= 10;
+ *     если был знак → записать '-';
+ *     дополнить пробелами слева до 6 байт.
+ *
+ * После работы caller-а R_07aa также делает `sub #12, sp` повторно
+ * (под второй буфер) и второй JSR на R_0888. Так что финальный SP
+ * после R_0888 должен указывать на caller-а — это обеспечивается
+ * эмуляцией всех stack-операций.
+ *
+ * Сохраняемые регистры: r1, r2, r4, r5 (по push/pop в стек-слоты).
+ *
+ * Финальное PSW от `mov (sp)+, r5`: N/Z по итоговому r5 (= caller's r5).
+ *
+ * Вызывается 7 раз в коде (печать счёта, попыток и т.п.).
+ * ------------------------------------------------------------------- */
+void R_0888_int_to_dec(void)
+{
+    uint16_t sp_0 = cpu.r[6];
+
+    /* Сохранение caller-овских регистров в зарезервированные слоты. */
+    uint16_t saved_r1 = cpu.r[1];
+    uint16_t saved_r2 = cpu.r[2];
+    uint16_t saved_r4 = cpu.r[4];
+    uint16_t saved_r5 = cpu.r[5];
+
+    /* Чтение аргументов со стека. */
+    uint16_t pc_ret      = bk_read_w(sp_0);
+    uint16_t buffer_ptr  = bk_read_w((uint16_t)(sp_0 + 2));
+    uint16_t source_ptr  = bk_read_w((uint16_t)(sp_0 + 4));
+    int16_t  count       = (int16_t)bk_read_w((uint16_t)(sp_0 + 6));
+
+    /* Эмуляция «save регистров в зарезервированные стек-слоты».
+     * Оригинал: 0888-0896 пишет r1/r2/r4/r5 в (sp+8..sp+14).
+     * Затем 0898 копирует PC_return в (sp+16). */
+    bk_write_w((uint16_t)(sp_0 +  8), saved_r1);
+    bk_write_w((uint16_t)(sp_0 + 10), saved_r2);
+    bk_write_w((uint16_t)(sp_0 + 12), saved_r4);
+    bk_write_w((uint16_t)(sp_0 + 14), saved_r5);
+    bk_write_w((uint16_t)(sp_0 + 16), pc_ret);
+
+    /* Цикл: для каждого числа. Оригинал начинает с r5 = buffer_ptr - 6
+     * и делает r5 += 6 в начале каждой итерации. */
+    uint16_t buffer = (uint16_t)(buffer_ptr - 6u);
+    uint16_t source = source_ptr;
+
+    while (1) {
+        buffer = (uint16_t)(buffer + 6u);     /* add #6, r5 */
+        bk_write_b(buffer, 0);                 /* clrb (r5) — null terminator */
+        count--;                               /* dec (sp) */
+        if (count < 0) break;                  /* bmi exit */
+
+        uint16_t slot_end = (uint16_t)(buffer + 6u);
+        int16_t  width = 6;
+
+        /* Прочитать число; если < 0 — взять модуль. */
+        uint16_t raw = bk_read_w(source);
+        int16_t  num = (int16_t)raw;
+        int      negative = num < 0;
+        uint16_t abs_num = negative ? (uint16_t)(-num) : (uint16_t)num;
+
+        /* Извлекаем цифры справа налево. */
+        do {
+            uint16_t digit = abs_num % 10u;
+            abs_num = abs_num / 10u;
+            slot_end = (uint16_t)(slot_end - 1u);
+            bk_write_b(slot_end, (uint8_t)(digit | 0060u));
+            width--;
+        } while (abs_num != 0);
+
+        source = (uint16_t)(source + 2u);      /* tst (r4)+ */
+
+        /* Если число было отрицательным — '-' перед цифрами. */
+        if (negative) {
+            slot_end = (uint16_t)(slot_end - 1u);
+            bk_write_b(slot_end, 0055u);       /* '-' */
+            width--;
+            if (width == 0) continue;
+        }
+
+        /* Заполняем оставшееся пробелами. */
+        while (width > 0) {
+            slot_end = (uint16_t)(slot_end - 1u);
+            bk_write_b(slot_end, 0040u);       /* ' ' */
+            width--;
+        }
+    }
+
+    /* Восстановление регистров из стек-слотов (по тому же порядку, что
+     * оригинал — pop r1, r2, r4, r5). */
+    cpu.r[1] = bk_read_w((uint16_t)(sp_0 +  8));
+    cpu.r[2] = bk_read_w((uint16_t)(sp_0 + 10));
+    cpu.r[4] = bk_read_w((uint16_t)(sp_0 + 12));
+    cpu.r[5] = bk_read_w((uint16_t)(sp_0 + 14));
+
+    /* Финальное PSW от mov (sp)+, r5: N/Z по итоговому r5, V=0, C unchanged. */
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+    if ((int16_t)cpu.r[5] < 0) cpu.psw |= PSW_N;
+    if (cpu.r[5] == 0)         cpu.psw |= PSW_Z;
+
+    /* Оригинал заканчивает с SP = sp_0 + 16 (указывает на PC_return copy);
+     * затем rts pc снимает PC и SP += 2 → sp_0 + 18. */
+    cpu.r[6] = (uint16_t)(sp_0 + 16);
+    rts_pc();
+}
+
 /* Тело R_1558 без rts_pc (для inline-использования из R_1522). */
 static void R_1558_body(void)
 {
@@ -1793,6 +1919,7 @@ static const struct {
      * оставлено в файле как разметка. */
     { 0001720u, R_01720_bel_dec_lives },  /* 0x03d0 */
     { 0003764u, R_07f4_lose_one },        /* 0x07f4 */
+    { 0004210u, R_0888_int_to_dec },      /* 0x0888 */
     { 0005106u, R_0a46_draw_8rows_v2 },   /* 0x0a46 */
     { 0007432u, R_0f1a_anim_timer3 },     /* 0x0f1a */
     { 0012442u, R_1522_draw_map },        /* 0x1522 */

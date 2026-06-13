@@ -59,5 +59,6 @@ void R_0f1a_anim_timer3(void);
 void R_1558_draw_8rows(void);
 void R_0a46_draw_8rows_v2(void);
 void R_1522_draw_map(void);
+void R_0888_int_to_dec(void);
 
 #endif /* KLAD2_ROUTINES_H */
