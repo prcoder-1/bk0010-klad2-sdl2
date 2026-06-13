@@ -62,5 +62,6 @@ void R_1522_draw_map(void);
 void R_0888_int_to_dec(void);
 void R_07aa_print_score(void);
 void R_0c2c_draw_hero(void);
+void R_03372_print_attempts(void);
 
 #endif /* KLAD2_ROUTINES_H */
