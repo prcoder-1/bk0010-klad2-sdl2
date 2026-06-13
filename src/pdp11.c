@@ -73,6 +73,7 @@ static const struct {
     { 0003652u, R_07aa_print_score,           "R_07aa"  },
     { 0004210u, R_0888_int_to_dec,            "R_0888"  },
     { 0005106u, R_0a46_draw_8rows_v2,         "R_0a46"  },
+    { 0006054u, R_0c2c_draw_hero,             "R_0c2c"  },
     { 0007432u, R_0f1a_anim_timer3,           "R_0f1a"  },
     { 0012442u, R_1522_draw_map,              "R_1522"  },
     { 0012530u, R_1558_draw_8rows,            "R_1558"  },

@@ -1458,6 +1458,94 @@ void R_0888_int_to_dec(void)
 }
 
 /* ---------------------------------------------------------------------
+ * R_0c2c_draw_hero — рисователь героя (главная функция отрисовки).
+ * (0x0c2c..0x0c5a, 48 байт, 13 инструкций.)
+ *
+ * Оригинал:
+ *   jsr   pc, @#R_07aa      ; обновить «Счёт N Попыток M» наверху
+ *   mov   @#14420, r0       ; r0 = текущий код кадра героя
+ *   mov   #21640, r2         ; r2 = xor_base для героя
+ *   mov   #14420, r4         ; r4 = anim_hero
+ *   jsr   pc, @#R_14030      ; рисуем героя в текущем направлении
+ *   mov   @#14422, r3        ; r3 = char_ptr_hero
+ *   bit   #4000, (r3)        ; если bit 0o4000 в клетке → exit
+ *   bne   exit
+ *   mov   #10, r0            ; r0 = 8 (idle direction)
+ *   mov   #21640, r2
+ *   mov   #14420, r4
+ *   jsr   pc, @#R_14030      ; рисуем idle-кадр поверх
+ * exit:
+ *   rts   pc
+ *
+ * Семантика: обновляет UI (счёт/попытки), рисует героя в направлении
+ * движения, если клетка не имеет блокирующего флага — рисует ещё
+ * idle-кадр (вероятно для эффекта «двойной экспозиции» при ходьбе).
+ *
+ * Все 3 JSR — на уже декомпилированные C-замены.
+ * ------------------------------------------------------------------- */
+void R_0c2c_draw_hero(void)
+{
+    /* jsr pc, R_07aa — push PC return (= 0x0c30), call. */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], 0x0c30);
+    R_07aa_print_score();
+
+    /* mov @#14420, r0 — r0 = old_code_hero. */
+    cpu.r[0] = bk_read_w(014420u);
+    psw_nz_w(cpu.r[0]);
+
+    /* mov #21640 (octal) = 0x4640, r2. */
+    cpu.r[2] = 021640u;
+    psw_nz_w(021640u);
+
+    /* mov #14420 octal = 0x1910, r4. */
+    cpu.r[4] = 014420u;
+    psw_nz_w(014420u);
+
+    /* jsr pc, R_14030 — push PC return (= 0x0c40), call. */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], 0x0c40);
+    R_14030_draw_compound_sprite();
+
+    /* mov @#14422, r3 — r3 = char_ptr_hero. */
+    cpu.r[3] = bk_read_w(014422u);
+    psw_nz_w(cpu.r[3]);
+
+    /* bit #4000, (r3) — test bit 0o4000 in mem[r3]. */
+    {
+        uint16_t cell = bk_read_w(cpu.r[3]);
+        uint16_t res = (uint16_t)(cell & 04000u);
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+        if ((int16_t)res < 0) cpu.psw |= PSW_N;
+        if (res == 0)         cpu.psw |= PSW_Z;
+        /* bne 0x0c5a — exit. */
+        if (res != 0) {
+            rts_pc();
+            return;
+        }
+    }
+
+    /* mov #10 (octal) = 8 dec, r0. */
+    cpu.r[0] = 010u;
+    psw_nz_w(010u);
+
+    /* mov #21640, r2. */
+    cpu.r[2] = 021640u;
+    psw_nz_w(021640u);
+
+    /* mov #14420, r4. */
+    cpu.r[4] = 014420u;
+    psw_nz_w(014420u);
+
+    /* jsr pc, R_14030 (second time для idle). */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], 0x0c5a);
+    R_14030_draw_compound_sprite();
+
+    rts_pc();
+}
+
+/* ---------------------------------------------------------------------
  * R_07aa_print_score — печать строки «Счёт N Попыток M» через EMT
  * 020/024 + двойной вызов R_0888 для int → ASCII.
  * (0x07aa..0x07e4, 60 байт, 11 инструкций.)
@@ -2024,6 +2112,7 @@ static const struct {
     { 0003652u, R_07aa_print_score },     /* 0x07aa */
     { 0004210u, R_0888_int_to_dec },      /* 0x0888 */
     { 0005106u, R_0a46_draw_8rows_v2 },   /* 0x0a46 */
+    { 0006054u, R_0c2c_draw_hero },       /* 0x0c2c */
     { 0007432u, R_0f1a_anim_timer3 },     /* 0x0f1a */
     { 0012442u, R_1522_draw_map },        /* 0x1522 */
     { 0012530u, R_1558_draw_8rows },      /* 0x1558 */
