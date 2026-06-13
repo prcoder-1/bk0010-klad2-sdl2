@@ -50,5 +50,6 @@ void R_06602_enemy_e2_handler(void);
 void R_06632_main_e2(void);
 void R_06462_e2_teleport(void);
 void R_07306_hero_teleport(void);
+void R_07462_main_e1(void);
 
 #endif /* KLAD2_ROUTINES_H */
