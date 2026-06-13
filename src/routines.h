@@ -32,6 +32,12 @@ typedef void (*routine_fn)(void);
 /* Возвращает C-замену для адреса pc или NULL, если её нет. */
 routine_fn routines_lookup(uint16_t pc);
 
+/* Если 1 — routines_lookup всегда возвращает NULL (диспетчер C-замен
+ * отключён). Используется AB-инфраструктурой, чтобы во время
+ * интерпретированной фазы НЕ вызвать C-замену повторно: иначе AB
+ * сравнивает C с самой собой, а не с интерпретатором. */
+extern int routines_runtime_disabled;
+
 /* Прямой доступ для A/B-режима (когда замена не зарегистрирована в
  * g_routines[], но мы хотим запустить её для сравнения с интерпрета-
  * тором). По мере декомпиляции — добавляем декларации сюда. */
@@ -40,5 +46,6 @@ void R_07202_anim_tick_e2_move(void);
 void R_07242_anim_tick_e2_idle(void);
 void R_10102_anim_tick_e1_move(void);
 void R_10142_anim_tick_e1_idle(void);
+void R_06602_enemy_e2_handler(void);
 
 #endif /* KLAD2_ROUTINES_H */

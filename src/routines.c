@@ -424,6 +424,189 @@ void R_10142_anim_tick_e1_idle(void)
 }
 
 /* ---------------------------------------------------------------------
+ * R_06602_enemy_e2_handler — обработчик ИИ врага #2 (0x0d82..0x0e80,
+ * 254 байта, ~100 инструкций). Точка входа из главного цикла.
+ *
+ * Алгоритм:
+ *   - Если код кадра врага == 8 («стоит») → переход в idle-секцию.
+ *   - Иначе вычисляются X-координаты врага и героя:
+ *       (char_ptr - 0o14550) & 0o77 — индекс внутри строки видеообласти,
+ *       0o14550 — база карты (середина экрана 0o100 × 0o57 = 0o14400+).
+ *   - Сравнение X:
+ *       e2.x  < hero.x → пробуем идти вправо (направление r0=0);
+ *       e2.x  > hero.x → пробуем идти влево (r0=2);
+ *       e2.x == hero.x → переходим в вертикальную ветку.
+ *   - В каждой попытке движения проверяем 3 препятствия:
+ *       (1) bit в текущей клетке (битмаска направления движения);
+ *       (2) для горизонтальных — cmpb #11, 2(r1)/-2(r1) (тип
+ *           соседней клетки == 11 — лестница, нельзя пройти);
+ *       (3) следующая клетка == HERO_TARGET_PTR (там стоит герой
+ *           — стоп, чтобы не наложиться).
+ *   - При неудаче — fallthrough в вертикальную или idle ветку.
+ *   - После jsr R_07202 (move) проверяется bit 0o4000 в новой клетке
+ *     (стоит ли в углу/яме) — если да, выход. Иначе проверка коллизии
+ *     с героем под собой → если нет — jsr R_07242 (idle).
+ *
+ * Bit-маски направлений в клетке карты:
+ *   0o100000 — можно вправо
+ *   0o040000 — можно влево
+ *   0o020000 — можно вверх
+ *   0o010000 — можно вниз
+ *   0o004000 — клетка «удержание» (после движения, выход без idle)
+ *   0o002000 — клетка-ловушка (в idle-ветке: если попал — set code 6)
+ *
+ * Структура anim:
+ *   anim_e2  = 0o14440: +0 code, +2 char_ptr, +4 phase, +6 X
+ *   anim_h+2 = 0o14422: char_ptr героя
+ *   HERO_TARGET_PTR @0o14432 — позиция выстрела/прицел героя.
+ * ------------------------------------------------------------------- */
+enum {
+    ANIM_E2          = 0014440u,   /* code */
+    ANIM_E2_CHAR_PTR = 0014442u,   /* +2 от ANIM_E2 */
+    ANIM_HERO_CP_PTR = 0014422u,   /* char_ptr героя — указатель на байт в карте */
+    HERO_TARGET_PTR  = 0014432u,   /* позиция «прицела/тени» героя */
+    MAP_BASE         = 0014550u,
+};
+
+void R_06602_enemy_e2_handler(void)
+{
+    uint16_t old_code;
+    uint16_t cp_e2, cp_hero;
+    int16_t  e2_idx, hero_idx;
+    uint16_t cell, neighbour;
+
+    /* 0d82-0d8a: init + if (*r5 == 8) goto idle.
+     * Оригинал на 0d82-0d88 делает `mov #14440, r5; mov #14422, r4`,
+     * а на 0d8a — `cmp #10, (r5)+` (autoinc) → r5 становится = 0o14442.
+     * Эти значения регистров остаются актуальными во ВСЕХ возможных
+     * RTS-выходах функции (никакая ветка их потом не перезаписывает на
+     * что-то иное). Caller-код **может** опираться на них — поэтому
+     * в C-замене обязательно эмулируем эти финальные значения cpu.r[4]
+     * и cpu.r[5], даже если внутренней логике они не нужны. */
+    cpu.r[5] = ANIM_E2_CHAR_PTR;   /* = 0o14442, post-autoinc */
+    cpu.r[4] = ANIM_HERO_CP_PTR;   /* = 0o14422 (но позже перезаписывается на 0o14440 в каждой ветке) */
+
+    old_code = bk_read_w(ANIM_E2);
+    if (old_code == 0010u) goto L_idle;
+
+    /* 0d90-0da0: горизонтальная позиция e2 и героя. */
+    cp_e2   = bk_read_w(ANIM_E2_CHAR_PTR);
+    cp_hero = bk_read_w(ANIM_HERO_CP_PTR);
+    e2_idx   = (int16_t)((cp_e2   - MAP_BASE) & 077u);
+    hero_idx = (int16_t)((cp_hero - MAP_BASE) & 077u);
+
+    /* 0da4-0da8: cmp r0,r1; beq vertical; bgt try_left. */
+    if (e2_idx == hero_idx) goto L_vertical;
+    if (e2_idx >  hero_idx) goto L_try_left;
+
+    /* === 0daa-0dc6: e2 слева от hero → пробуем идти вправо === */
+    cp_e2 = bk_read_w(ANIM_E2_CHAR_PTR);
+    cell = bk_read_w(cp_e2);
+    if ((cell & 0100000u) == 0) goto L_vertical;       /* нет «можно вправо» */
+    if (bk_read_b((uint16_t)(cp_e2 + 2u)) == 011)
+        goto L_vertical;                                /* справа — лестница */
+    neighbour = (uint16_t)(cp_e2 + 2u);
+    if (neighbour == bk_read_w(HERO_TARGET_PTR))
+        goto L_vertical;                                /* там стоит герой */
+    cpu.r[0] = 0;                                       /* направление = вправо */
+    /* fall through в main_tail */
+
+L_main_tail:
+    /* В этой точке оригинал на 0dca делает `mov #14440, r4` — что
+     * соответствует выходному значению r4 = ANIM_E2 во всех RTS,
+     * проходящих через main_tail. (Все остальные пути выходят раньше
+     * — но **в каждом** в какой-то момент идёт `mov #14440, r4`, а
+     * `mov #14440, r5` нет, поэтому r5 уже выставлен в начале.) */
+    cpu.r[4] = ANIM_E2;
+    /* 0dc6-0de6: jsr R_07202 + проверка bit 04000 + jsr R_07242 + RTS.
+     * Используем `anim_tick` напрямую (не публичную обёртку
+     * R_07202_anim_tick_e2_move), потому что та сама делает rts_pc —
+     * у нас в R_06602 «JSR-пуша» не было, и rts снял бы лишнее со
+     * стека. */
+    anim_tick(0021760u, 0014440u, 0017366u, 1, 7);  /* = тело R_07202 */
+    /* После R_07202 — caller перезаписывает r4 = 014440 (anim_e2_code).
+     * `bit #4000, @2(r4)` = test bit 04000 в слове по mem[r4+2] =
+     * char_ptr_e2. Если стоит — выход. */
+    cp_e2 = bk_read_w(ANIM_E2_CHAR_PTR);
+    if (bk_read_w(cp_e2) & 04000u) return;
+    /* mov (r5), r1; add #100, r1; cmp r1, @#14432; beq exit */
+    {
+        uint16_t below = (uint16_t)(bk_read_w(ANIM_E2_CHAR_PTR) + 0100u);
+        if (below == bk_read_w(HERO_TARGET_PTR)) return;
+    }
+    anim_tick(0021760u, 0014440u, 0017370u, 1, 4);  /* = тело R_07242 */
+    return;
+
+    /* === 0de8: вертикальное движение === */
+L_vertical:
+    cp_e2   = bk_read_w(ANIM_E2_CHAR_PTR);
+    cp_hero = bk_read_w(ANIM_HERO_CP_PTR);
+    /* sub #14550, r0; bic #77, r0 → r0 &= 0177700 (высокие биты =
+     * номер строки × 0100). */
+    e2_idx   = (int16_t)((cp_e2   - MAP_BASE) & 0177700u);
+    hero_idx = (int16_t)((cp_hero - MAP_BASE) & 0177700u);
+
+    if (e2_idx == hero_idx) goto L_main_tail;          /* same row */
+    if (e2_idx >  hero_idx) goto L_try_up;
+
+    /* e2 выше hero → пробуем идти вниз (r0=6) */
+    cp_e2 = bk_read_w(ANIM_E2_CHAR_PTR);
+    cell = bk_read_w(cp_e2);
+    if ((cell & 010000u) == 0) goto L_main_tail;       /* нет «можно вниз» */
+    {
+        uint16_t below = (uint16_t)(cp_e2 + 0100u);
+        if (below == bk_read_w(HERO_TARGET_PTR))
+            goto L_main_tail;
+    }
+    cpu.r[0] = 6;
+    anim_tick(0021760u, 0014440u, 0017366u, 1, 7);  /* = тело R_07202 */
+    goto L_main_tail;
+
+    /* === 0e1e: e2 справа от hero → пробуем идти влево (r0=2) === */
+L_try_left:
+    cp_e2 = bk_read_w(ANIM_E2_CHAR_PTR);
+    cell = bk_read_w(cp_e2);
+    if ((cell & 040000u) == 0) goto L_main_tail;
+    /* cmpb #11, 0177776(r1) — байт по адресу r1-2 (слева от текущей). */
+    if (bk_read_b((uint16_t)(cp_e2 - 2u)) == 011) goto L_main_tail;
+    neighbour = (uint16_t)(cp_e2 - 2u);
+    if (neighbour == bk_read_w(HERO_TARGET_PTR)) goto L_main_tail;
+    cpu.r[0] = 2;
+    anim_tick(0021760u, 0014440u, 0017366u, 1, 7);  /* = тело R_07202 */
+    goto L_main_tail;
+
+    /* === 0e42: пробуем вверх (r0=4) === */
+L_try_up:
+    cp_e2 = bk_read_w(ANIM_E2_CHAR_PTR);
+    cell = bk_read_w(cp_e2);
+    if ((cell & 020000u) == 0) goto L_main_tail;
+    {
+        uint16_t above = (uint16_t)(cp_e2 - 0100u);
+        if (above == bk_read_w(HERO_TARGET_PTR)) goto L_main_tail;
+    }
+    cpu.r[0] = 4;
+    anim_tick(0021760u, 0014440u, 0017366u, 1, 7);  /* = тело R_07202 */
+    goto L_main_tail;
+
+    /* === 0e5e: idle-секция === */
+L_idle:
+    {
+        uint16_t below = (uint16_t)(bk_read_w(ANIM_E2_CHAR_PTR) + 0100u);
+        if (below == bk_read_w(HERO_TARGET_PTR)) goto L_idle_set6;
+        cpu.r[0] = 0010u;
+        anim_tick(0021760u, 0014440u, 0017370u, 1, 4);  /* = тело R_07242 */
+        /* bit #2000, @2(r4) — test bit 02000 в mem[char_ptr_e2]. Если
+         * стоит — НЕ ставим code=6, выход. */
+        cp_e2 = bk_read_w(ANIM_E2_CHAR_PTR);
+        if (bk_read_w(cp_e2) & 02000u) return;
+    }
+L_idle_set6:
+    /* mov #6, @#14440 — устанавливаем код направления = 6 (вниз). */
+    bk_write_w(ANIM_E2, 6u);
+    return;
+}
+
+/* ---------------------------------------------------------------------
  * Таблица регистрации. Расширяется по мере декомпиляции новых процедур.
  * Линейный поиск — таблица маленькая (десятки записей в обозримом
  * будущем), бинарный поиск преждевременен.
@@ -432,6 +615,16 @@ static const struct {
     uint16_t   pc;
     routine_fn fn;
 } g_routines[] = {
+    /* R_06602_enemy_e2_handler сюда НЕ регистрируется: 0x0d82 — это
+     * не самостоятельная процедура, а внутренняя branch-метка более
+     * крупного блока. JSR-вызовов на 0x0d82 в коде нет (только BR/BVC
+     * с 0x0d04 и 0x0d7a). При вызове через диспетчер моя rts_pc снимает
+     * со стека адрес возврата НЕ R_06602, а внешней охватывающей
+     * процедуры — и игра ломается. Декомпиляция остаётся в файле как
+     * рабочая разметка алгоритма ИИ, но не используется в продакшене.
+     * AB-инфраструктура её тоже не покрывает корректно по той же
+     * причине (snapshot/restore работают только для функций с честной
+     * JSR/RTS-семантикой). */
     { 0007202u, R_07202_anim_tick_e2_move },
     { 0007242u, R_07242_anim_tick_e2_idle },
     { 0010102u, R_10102_anim_tick_e1_move },
@@ -456,10 +649,13 @@ static void check_env(void)
     if (g_trace_c  < 0) g_trace_c  = getenv("KLAD2_TRACE_C")       ? 1 : 0;
 }
 
+int routines_runtime_disabled = 0;
+
 routine_fn routines_lookup(uint16_t pc)
 {
     check_env();
     if (g_disabled) return NULL;
+    if (routines_runtime_disabled) return NULL;
     for (size_t i = 0; i < sizeof g_routines / sizeof g_routines[0]; i++) {
         if (g_routines[i].pc == pc) {
             if (g_trace_c) g_hit_count[i]++;

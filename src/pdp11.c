@@ -62,6 +62,8 @@ static const struct {
     { 0007242u, R_07242_anim_tick_e2_idle,    "R_07242" },
     { 0010102u, R_10102_anim_tick_e1_move,    "R_10102" },
     { 0010142u, R_10142_anim_tick_e1_idle,    "R_10142" },
+    /* R_06602: снято — не самостоятельная JSR-процедура. См.
+     * комментарий в routines.c у g_routines[]. */
 };
 
 static routine_fn ab_lookup(uint16_t pc, const char **out_name)
@@ -82,6 +84,8 @@ static uint16_t g_ab_ret_pc;              /* PC возврата ожидает�
 static uint16_t g_ab_r4;                  /* anim-структура */
 static uint8_t  g_ab_snap_mem[0x10000];   /* состояние до вызова */
 static uint8_t  g_ab_c_mem[0x10000];      /* состояние после C-версии */
+static uint16_t g_ab_c_regs[8];           /* регистры после C-версии */
+static uint16_t g_ab_c_psw;               /* PSW после C-версии */
 static uint16_t g_ab_snap_regs[8];
 static uint16_t g_ab_snap_psw;
 static unsigned g_ab_calls;
@@ -159,8 +163,10 @@ static void ab_on_enter(void)
     bk_write_hook = NULL;
     g_ab_phase = 0;
 
-    /* 3) Сохраняем результат C-версии. */
+    /* 3) Сохраняем результат C-версии (память + регистры + PSW). */
     memcpy(g_ab_c_mem, bk_mem, 0x10000);
+    memcpy(g_ab_c_regs, cpu.r, sizeof g_ab_c_regs);
+    g_ab_c_psw  = cpu.psw;
     g_ab_ret_pc = cpu.r[7];
 
     /* 4) Восстанавливаем snapshot для интерпретатора. */
@@ -168,9 +174,13 @@ static void ab_on_enter(void)
     memcpy(cpu.r, g_ab_snap_regs, sizeof(cpu.r));
     cpu.psw = g_ab_snap_psw;
     /* 5) Включаем write-логгер в режиме "interp" — выключится в
-     *    ab_check_result, когда PC вернётся в адрес возврата. */
+     *    ab_check_result, когда PC вернётся в адрес возврата.
+     *    КРИТИЧНО: отключаем диспетчер C-замен на время интерпретации,
+     *    иначе routines_lookup(0o6602) снова вызовет C-замену, и AB
+     *    будет сравнивать C с самой собой. */
     g_ab_phase = 2;
     bk_write_hook = ab_write_hook;
+    routines_runtime_disabled = 1;
 }
 
 static void ab_check_result(void)
@@ -178,9 +188,48 @@ static void ab_check_result(void)
     if (!g_ab_active) return;
     if (cpu.r[7] != g_ab_ret_pc) return;
 
-    /* Выключаем write-логгер перед сравнением. */
+    /* Выключаем write-логгер и снова включаем C-диспетчер перед
+     * сравнением. */
     bk_write_hook = NULL;
     g_ab_phase = 0;
+    routines_runtime_disabled = 0;
+
+    /* Сравниваем регистры r0..r5 + PSW (опционально, KLAD2_AB_REGS=1). */
+    if (getenv("KLAD2_AB_REGS")) {
+        static const char *rnames[] = {"r0","r1","r2","r3","r4","r5"};
+        for (int i = 0; i < 6; i++) {
+            if (g_ab_c_regs[i] != cpu.r[i]) {
+                fprintf(stderr,
+                        "AB-REG %s #%u: %s C=%06o INTERP=%06o\n",
+                        g_ab_cur_name, g_ab_calls,
+                        rnames[i], g_ab_c_regs[i], cpu.r[i]);
+            }
+        }
+        if (g_ab_c_psw != cpu.psw) {
+            fprintf(stderr,
+                    "AB-PSW %s #%u: C=%03o INTERP=%03o\n",
+                    g_ab_cur_name, g_ab_calls,
+                    g_ab_c_psw, cpu.psw);
+        }
+    }
+
+    /* Полное сравнение bk_mem (опционально, KLAD2_AB_FULLMEM=1).
+     * Write-логгер покрывает только видеообласть; стек и системные
+     * ячейки могут расходиться невидимо. */
+    if (getenv("KLAD2_AB_FULLMEM")) {
+        for (uint32_t a = 0; a < 0x10000; a++) {
+            if (g_ab_c_mem[a] != bk_mem[a]) {
+                fprintf(stderr,
+                        "AB-MEM %s #%u: addr=%06o C=%02x INTERP=%02x "
+                        "(C16=%06o INTERP16=%06o)\n",
+                        g_ab_cur_name, g_ab_calls,
+                        (unsigned)a, g_ab_c_mem[a], bk_mem[a],
+                        (unsigned)(g_ab_c_mem[a]|(g_ab_c_mem[a+1]<<8)),
+                        (unsigned)(bk_mem[a]|(bk_mem[a+1]<<8)));
+                break;  /* только первый — иначе лог раздуется */
+            }
+        }
+    }
 
     /* Сравниваем write-логи — это самое чёткое представление, что
      * именно делают версии в видеообласть. Печатаем только при первом
