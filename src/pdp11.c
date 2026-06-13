@@ -67,6 +67,8 @@ static const struct {
     { 0006632u, R_06632_main_e2,              "R_06632" },
     { 0007306u, R_07306_hero_teleport,        "R_07306" },
     { 0007462u, R_07462_main_e1,              "R_07462" },
+    { 0001720u, R_01720_bel_dec_lives,        "R_01720" },
+    { 0003764u, R_07f4_lose_one,              "R_07f4"  },
     { 0012326u, R_14d6_bel,                   "R_14d6" },
     { 0012716u, R_15ce_clear_cell,            "R_15ce" },
 };
