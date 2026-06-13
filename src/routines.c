@@ -1331,6 +1331,62 @@ void R_15ce_clear_cell(void)
 }
 
 /* ---------------------------------------------------------------------
+ * R_0a46_draw_8rows_v2 — копия R_1558 семантически.
+ * (0x0a46..0x0a64, 32 байта, 11 инструкций.)
+ *
+ * Различия с R_1558:
+ *   - push r5, r4, r3, r1 (R_1558: r3, r2, r1, r5)
+ *   - pop r1, r3, r4, r5 (соответственно)
+ *
+ * Тело идентично: r5=8; loop 8 times: copy word from (r2)+ to
+ * 46000(r1), r1 += 0o100; pop, rts.
+ *
+ * Семантика та же: рисует 8-rows sprite напрямую из массива (без
+ * подстановки через шрифт).
+ *
+ * Вызывается из 2-х мест в коде.
+ * ------------------------------------------------------------------- */
+void R_0a46_draw_8rows_v2(void)
+{
+    /* push r5, r4, r3, r1. */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[5]);
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[4]);
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[3]);
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[1]);
+
+    /* mov #10, r5. */
+    cpu.r[5] = 0010u;
+    psw_nz_w(cpu.r[5]);
+
+    /* Loop 8 раз. */
+    for (unsigned i = 0; i < 8; i++) {
+        uint16_t w = bk_read_w(cpu.r[2]);
+        bk_write_w((uint16_t)(SCREEN_DRAW_BASE + cpu.r[1]), w);
+        cpu.r[2] = (uint16_t)(cpu.r[2] + 2u);
+        cpu.r[1] = (uint16_t)(cpu.r[1] + SCREEN_ROW_BYTES);
+        cpu.r[5]--;
+    }
+
+    /* PSW.C от последнего add #100, r1. */
+    {
+        uint16_t r1_prev = (uint16_t)(cpu.r[1] - SCREEN_ROW_BYTES);
+        if (cpu.r[1] < r1_prev) cpu.psw |= PSW_C;
+        else                     cpu.psw &= (uint16_t)~PSW_C;
+    }
+
+    /* pop r1, r3, r4, r5. */
+    cpu.r[1] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+    cpu.r[3] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+    cpu.r[4] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+    cpu.r[5] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+
+    /* Финал: PSW от mov (sp)+, r5 — N/Z по r5, V=0, C unchanged. */
+    psw_nz_w(cpu.r[5]);
+
+    rts_pc();
+}
+
+/* ---------------------------------------------------------------------
  * R_1558_draw_8rows — копирует 8 word'ов из массива в видеообласть.
  * (0x1558..0x1576, 32 байта, 11 инструкций.)
  *
@@ -1625,6 +1681,7 @@ static const struct {
      * оставлено в файле как разметка. */
     { 0001720u, R_01720_bel_dec_lives },  /* 0x03d0 */
     { 0003764u, R_07f4_lose_one },        /* 0x07f4 */
+    { 0005106u, R_0a46_draw_8rows_v2 },   /* 0x0a46 */
     { 0007432u, R_0f1a_anim_timer3 },     /* 0x0f1a */
     { 0012530u, R_1558_draw_8rows },      /* 0x1558 */
     { 0012326u, R_14d6_bel },             /* 0x14d6 */

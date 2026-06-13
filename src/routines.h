@@ -57,5 +57,6 @@ void R_07f4_lose_one(void);
 void R_0262_check_key1(void);
 void R_0f1a_anim_timer3(void);
 void R_1558_draw_8rows(void);
+void R_0a46_draw_8rows_v2(void);
 
 #endif /* KLAD2_ROUTINES_H */
