@@ -132,6 +132,90 @@ static int dump_memory(const char *path)
     return 0;
 }
 
+/* ---------------- Snapshot для мгновенного старта -------------------- *
+ *
+ * PIC-релокатор КЛАД-2 (адреса 0x01DA..~0x027F) тратит ~50000 шагов
+ * интерпретатора на распаковку самого себя в финальный layout. Эта
+ * работа детерминирована — каждый запуск даёт ровно тот же образ.
+ * Чтобы не тратить эти 5–10 секунд при каждом старте порта, мы
+ * сохраняем состояние ВМ сразу после релокатора (bk_mem + регистры +
+ * PSW) в файл и при старте загружаем его, минуя релокацию.
+ *
+ * Признак «вышли из релокатора» — первый PC ≥ 0x300: всё ниже либо
+ * в системной области (0..0x40), либо в самом релокаторе.
+ *
+ * Формат файла klad2.snap:
+ *   bytes 0..3   — magic "KLD2"
+ *   bytes 4..7   — версия (uint32_t LE), сейчас 1
+ *   bytes 8..23  — регистры R0..R7 (8 × uint16_t LE)
+ *   bytes 24..25 — PSW
+ *   bytes 26..29 — резерв (0)
+ *   bytes 30..65565 — bk_mem (64 КиБ)
+ */
+enum { SNAP_MAGIC_VER = 1, SNAP_HDR_SIZE = 30 };
+
+static int snap_save(const char *path)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        fprintf(stderr, "snap_save: не могу открыть '%s'\n", path);
+        return -1;
+    }
+    uint32_t ver = SNAP_MAGIC_VER;
+    uint32_t resv = 0;
+    fwrite("KLD2", 1, 4, f);
+    fwrite(&ver, sizeof ver, 1, f);
+    fwrite(cpu.r, sizeof(uint16_t), 8, f);
+    fwrite(&cpu.psw, sizeof cpu.psw, 1, f);
+    fwrite(&resv, sizeof resv, 1, f);
+    size_t n = fwrite(bk_mem, 1, BK_MEM_SIZE, f);
+    fclose(f);
+    if (n != BK_MEM_SIZE) {
+        fprintf(stderr, "snap_save: записано %zu из %u\n",
+                n, (unsigned)BK_MEM_SIZE);
+        return -1;
+    }
+    fprintf(stderr, "snapshot записан в %s (PC=%06o, %u байт)\n",
+            path, (unsigned)cpu.r[7],
+            (unsigned)(SNAP_HDR_SIZE + BK_MEM_SIZE));
+    return 0;
+}
+
+static int snap_load(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "snap_load: не могу открыть '%s'\n", path);
+        return -1;
+    }
+    char magic[4]; uint32_t ver, resv;
+    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "KLD2", 4) != 0) {
+        fprintf(stderr, "snap_load: неверная сигнатура в '%s'\n", path);
+        fclose(f); return -1;
+    }
+    if (fread(&ver, sizeof ver, 1, f) != 1 || ver != SNAP_MAGIC_VER) {
+        fprintf(stderr, "snap_load: версия %u не поддерживается\n", ver);
+        fclose(f); return -1;
+    }
+    fread(cpu.r, sizeof(uint16_t), 8, f);
+    fread(&cpu.psw, sizeof cpu.psw, 1, f);
+    fread(&resv, sizeof resv, 1, f);
+    size_t n = fread(bk_mem, 1, BK_MEM_SIZE, f);
+    fclose(f);
+    if (n != BK_MEM_SIZE) {
+        fprintf(stderr, "snap_load: прочитано %zu из %u\n",
+                n, (unsigned)BK_MEM_SIZE);
+        return -1;
+    }
+    cpu.halted = 0;
+    fprintf(stderr,
+            "snapshot загружен из %s: PC=%06o, SP=%06o, "
+            "R0=%06o R1=%06o R2=%06o R3=%06o R4=%06o R5=%06o\n",
+            path, cpu.r[7], cpu.r[6],
+            cpu.r[0], cpu.r[1], cpu.r[2], cpu.r[3], cpu.r[4], cpu.r[5]);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     int trace = 0;
@@ -140,6 +224,8 @@ int main(int argc, char **argv)
     const char *rom_path =
         "/home/prcoder/emulators/БК-0010-01/bkemu/ROM/bk10_017_mon.rom";
     const char *dump_path = NULL;
+    const char *snap_save_path = NULL;
+    const char *snap_load_path = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--trace") == 0) {
@@ -153,6 +239,12 @@ int main(int argc, char **argv)
             if (g_steps_per_frame < 100) g_steps_per_frame = 100;
         } else if (strcmp(argv[i], "--dump-memory") == 0 && i + 1 < argc) {
             dump_path = argv[++i];
+        } else if (strcmp(argv[i], "--save-state") == 0 && i + 1 < argc) {
+            /* Один раз прогнать релокатор и записать состояние в файл. */
+            snap_save_path = argv[++i];
+        } else if (strcmp(argv[i], "--fast-start") == 0 && i + 1 < argc) {
+            /* Мгновенный старт: загрузить snapshot, минуя релокатор. */
+            snap_load_path = argv[++i];
         } else if (strcmp(argv[i], "--scale") == 0 && i + 1 < argc) {
             int s = (int)strtol(argv[++i], NULL, 0);
             if (s < 1 || s > 4) {
@@ -166,7 +258,8 @@ int main(int argc, char **argv)
                     "Неизвестный флаг: %s\n"
                     "Использование: %s [--trace] [--max-steps N] "
                     "[--rom path/to/mon.rom] [--speed N] [--scale N (1..4)] "
-                    "[--dump-memory path] [путь/к/BIN]\n",
+                    "[--dump-memory path] [--save-state path] "
+                    "[--fast-start path] [путь/к/BIN]\n",
                     argv[i], argv[0]);
             return EXIT_FAILURE;
         } else {
@@ -206,7 +299,19 @@ int main(int argc, char **argv)
     }
 
     int run_cpu = 0;
-    if (bin_path) {
+    if (snap_load_path) {
+        /* Мгновенный старт: bk_mem и регистры берём из snapshot,
+         * BIN-файл не нужен (но загруженный ROM-шрифт и образ ROM —
+         * нужны, потому что snapshot их НЕ хранит: они одинаковы на
+         * каждом запуске и приходят из локального файла). */
+        if (snap_load(snap_load_path) != 0) {
+            video_shutdown(); input_shutdown(); audio_shutdown(); sdl_teardown();
+            return EXIT_FAILURE;
+        }
+        pdp11_set_emt_handler(emt_dispatch);
+        pdp11_set_trace(trace);
+        run_cpu = 1;
+    } else if (bin_path) {
         uint16_t entry;
         if (bk_load_bin(bin_path, &entry) != 0) {
             video_shutdown(); input_shutdown(); audio_shutdown(); sdl_teardown();
@@ -219,6 +324,30 @@ int main(int argc, char **argv)
         fprintf(stderr,
                 "Загружен '%s': точка входа %06o, SP=%06o\n",
                 bin_path, entry, INITIAL_SP);
+
+        /* --save-state: прогнать релокатор по pdp11_step до первого
+         * «обычного» PC (≥ 0x300), сохранить состояние, выйти. */
+        if (snap_save_path) {
+            int steps = 0;
+            while (!cpu.halted && cpu.r[7] < 0x0300 && steps < 5000000) {
+                pdp11_step();
+                steps++;
+            }
+            if (cpu.halted) {
+                fprintf(stderr,
+                        "save-state: ЦП остановлен до выхода из "
+                        "релокатора (PC=%06o, шагов %d)\n",
+                        cpu.r[7], steps);
+            } else {
+                fprintf(stderr,
+                        "save-state: релокатор завершён за %d шагов, "
+                        "PC=%06o\n", steps, cpu.r[7]);
+                snap_save(snap_save_path);
+            }
+            video_shutdown(); input_shutdown();
+            audio_shutdown(); sdl_teardown();
+            return cpu.halted ? EXIT_FAILURE : EXIT_SUCCESS;
+        }
     } else {
         fill_demo_pattern();
     }
