@@ -1331,6 +1331,75 @@ void R_15ce_clear_cell(void)
 }
 
 /* ---------------------------------------------------------------------
+ * R_1558_draw_8rows — копирует 8 word'ов из массива в видеообласть.
+ * (0x1558..0x1576, 32 байта, 11 инструкций.)
+ *
+ * Похоже на R_14302, но БЕЗ подстановки через шрифт — r2 уже указывает
+ * на массив 8 слов спрайта (готовый sprite-data, не char-code).
+ *
+ * Оригинал:
+ *   mov   r3, -(sp)
+ *   mov   r2, -(sp)
+ *   mov   r1, -(sp)
+ *   mov   r5, -(sp)
+ *   mov   #10, r5             ; counter = 8
+ * loop:
+ *   mov   (r2)+, 46000(r1)    ; mem[0o46000+r1] = *r2++
+ *   add   #100, r1            ; r1 += 64
+ *   sob   r5, loop
+ *   mov   (sp)+, r5
+ *   mov   (sp)+, r1
+ *   mov   (sp)+, r2
+ *   mov   (sp)+, r3
+ *   rts   pc
+ *
+ * Вход: r1 = X (байтовая позиция), r2 = указатель на 8 слов спрайта.
+ * Финал: r1, r2, r3, r5 = caller's (восстановлены через push/pop).
+ *        PSW: N/Z по последнему pop'нутому r3; C от последнего add #100.
+ *
+ * Вызывается из 0x1578 (R_12570) и одного другого места.
+ * ------------------------------------------------------------------- */
+void R_1558_draw_8rows(void)
+{
+    /* push r3, r2, r1, r5. */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[3]);
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[2]);
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[1]);
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[5]);
+
+    /* mov #10, r5. */
+    cpu.r[5] = 0010u;
+    psw_nz_w(cpu.r[5]);
+
+    /* Loop 8 раз. */
+    for (unsigned i = 0; i < 8; i++) {
+        uint16_t w = bk_read_w(cpu.r[2]);
+        bk_write_w((uint16_t)(SCREEN_DRAW_BASE + cpu.r[1]), w);
+        cpu.r[2] = (uint16_t)(cpu.r[2] + 2u);
+        cpu.r[1] = (uint16_t)(cpu.r[1] + SCREEN_ROW_BYTES);
+        cpu.r[5]--;
+    }
+
+    /* PSW.C от последнего add #100, r1. */
+    {
+        uint16_t r1_prev = (uint16_t)(cpu.r[1] - SCREEN_ROW_BYTES);
+        if (cpu.r[1] < r1_prev) cpu.psw |= PSW_C;
+        else                     cpu.psw &= (uint16_t)~PSW_C;
+    }
+
+    /* pop r5, r1, r2, r3. */
+    cpu.r[5] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+    cpu.r[1] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+    cpu.r[2] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+    cpu.r[3] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+
+    /* Финальное PSW от mov (sp)+, r3: N/Z по r3, V=0, C unchanged. */
+    psw_nz_w(cpu.r[3]);
+
+    rts_pc();
+}
+
+/* ---------------------------------------------------------------------
  * R_0262_check_key1 — проверка нажатия клавиши '1'.
  * (0x0262..0x026e, 14 байт, 4 инструкции.)
  *
@@ -1557,6 +1626,7 @@ static const struct {
     { 0001720u, R_01720_bel_dec_lives },  /* 0x03d0 */
     { 0003764u, R_07f4_lose_one },        /* 0x07f4 */
     { 0007432u, R_0f1a_anim_timer3 },     /* 0x0f1a */
+    { 0012530u, R_1558_draw_8rows },      /* 0x1558 */
     { 0012326u, R_14d6_bel },             /* 0x14d6 */
     { 0012716u, R_15ce_clear_cell },      /* 0x15ce */
 };

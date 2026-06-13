@@ -71,6 +71,7 @@ static const struct {
     { 0001720u, R_01720_bel_dec_lives,        "R_01720" },
     { 0003764u, R_07f4_lose_one,              "R_07f4"  },
     { 0007432u, R_0f1a_anim_timer3,           "R_0f1a"  },
+    { 0012530u, R_1558_draw_8rows,            "R_1558"  },
     { 0012326u, R_14d6_bel,                   "R_14d6" },
     { 0012716u, R_15ce_clear_cell,            "R_15ce" },
 };

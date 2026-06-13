@@ -56,5 +56,6 @@ void R_01720_bel_dec_lives(void);
 void R_07f4_lose_one(void);
 void R_0262_check_key1(void);
 void R_0f1a_anim_timer3(void);
+void R_1558_draw_8rows(void);
 
 #endif /* KLAD2_ROUTINES_H */
