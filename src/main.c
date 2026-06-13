@@ -28,11 +28,15 @@
 enum {
     BK_SCREEN_W   = 256,
     BK_SCREEN_H   = 256,
-    INITIAL_SCALE = 2,
     /* Начальное значение SP перед запуском .BIN. Верх пользовательского
      * ОЗУ — прямо под видеобуфером MEM_VIDEO = 0o40000. */
     INITIAL_SP = 0040000u - 2u
 };
+
+/* Коэффициент увеличения окна (по-умолчанию ×2). Регулируется
+ * флагом `--scale N` (1..4). Не static — пригодится для будущей
+ * отрисовки. */
+static int g_scale = 2;
 
 /* Сколько инструкций крутим между кадрами SDL2 (60 fps под VSYNC).
  * По-хорошему БК-0010 на 3 МГц даёт ≈ 600 тыс. инструкций/с,
@@ -59,7 +63,7 @@ static int sdl_setup(void)
     g_window = SDL_CreateWindow(
         "КЛАД-2",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        BK_SCREEN_W * INITIAL_SCALE, BK_SCREEN_H * INITIAL_SCALE,
+        BK_SCREEN_W * g_scale, BK_SCREEN_H * g_scale,
         SDL_WINDOW_RESIZABLE);
     if (!g_window) {
         fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());
@@ -149,11 +153,19 @@ int main(int argc, char **argv)
             if (g_steps_per_frame < 100) g_steps_per_frame = 100;
         } else if (strcmp(argv[i], "--dump-memory") == 0 && i + 1 < argc) {
             dump_path = argv[++i];
+        } else if (strcmp(argv[i], "--scale") == 0 && i + 1 < argc) {
+            int s = (int)strtol(argv[++i], NULL, 0);
+            if (s < 1 || s > 4) {
+                fprintf(stderr,
+                        "--scale: ожидаемо 1..4, получено %d\n", s);
+                return EXIT_FAILURE;
+            }
+            g_scale = s;
         } else if (argv[i][0] == '-') {
             fprintf(stderr,
                     "Неизвестный флаг: %s\n"
                     "Использование: %s [--trace] [--max-steps N] "
-                    "[--rom path/to/mon.rom] [--speed N] "
+                    "[--rom path/to/mon.rom] [--speed N] [--scale N (1..4)] "
                     "[--dump-memory path] [путь/к/BIN]\n",
                     argv[i], argv[0]);
             return EXIT_FAILURE;
