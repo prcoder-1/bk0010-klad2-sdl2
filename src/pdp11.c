@@ -71,6 +71,7 @@ static const struct {
     { 0001720u, R_01720_bel_dec_lives,        "R_01720" },
     { 0003764u, R_07f4_lose_one,              "R_07f4"  },
     { 0003372u, R_03372_print_attempts,       "R_03372" },
+    { 0003746u, R_07e6_inc_attempts,             "R_07e6"  },
     { 0003652u, R_07aa_print_score,           "R_07aa"  },
     { 0004210u, R_0888_int_to_dec,            "R_0888"  },
     { 0005106u, R_0a46_draw_8rows_v2,         "R_0a46"  },
