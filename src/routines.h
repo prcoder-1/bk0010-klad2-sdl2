@@ -50,5 +50,7 @@ void R_06632_main_e2(void);
 void R_06462_e2_teleport(void);
 void R_07306_hero_teleport(void);
 void R_07462_main_e1(void);
+void R_14d6_bel(void);
+void R_15ce_clear_cell(void);
 
 #endif /* KLAD2_ROUTINES_H */
