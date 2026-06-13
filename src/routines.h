@@ -54,5 +54,7 @@ void R_14d6_bel(void);
 void R_15ce_clear_cell(void);
 void R_01720_bel_dec_lives(void);
 void R_07f4_lose_one(void);
+void R_0262_check_key1(void);
+void R_0f1a_anim_timer3(void);
 
 #endif /* KLAD2_ROUTINES_H */
