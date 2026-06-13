@@ -70,6 +70,7 @@ static const struct {
     /* R_0262: не регистрируется (не самостоятельная процедура). */
     { 0001720u, R_01720_bel_dec_lives,        "R_01720" },
     { 0003764u, R_07f4_lose_one,              "R_07f4"  },
+    { 0003652u, R_07aa_print_score,           "R_07aa"  },
     { 0004210u, R_0888_int_to_dec,            "R_0888"  },
     { 0005106u, R_0a46_draw_8rows_v2,         "R_0a46"  },
     { 0007432u, R_0f1a_anim_timer3,           "R_0f1a"  },

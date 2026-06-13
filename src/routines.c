@@ -17,6 +17,7 @@
 #include "routines.h"
 #include "audio.h"
 #include "bk.h"
+#include "emt.h"
 #include "pdp11.h"
 
 #include <stddef.h>
@@ -1456,6 +1457,107 @@ void R_0888_int_to_dec(void)
     rts_pc();
 }
 
+/* ---------------------------------------------------------------------
+ * R_07aa_print_score — печать строки «Счёт N Попыток M» через EMT
+ * 020/024 + двойной вызов R_0888 для int → ASCII.
+ * (0x07aa..0x07e4, 60 байт, 11 инструкций.)
+ *
+ * Оригинал:
+ *   mov   #1, r2          ; cursor.y = 1
+ *   clr   r1              ; cursor.x = 0
+ *   emt   024             ; set cursor
+ *   sub   #12, sp         ; reserve 10 dec (= 0o12) bytes для R_0888 work
+ *   mov   #1, -(sp)       ; arg3: count = 1
+ *   mov   #17440, -(sp)   ; arg2: source = &счёт
+ *   mov   #2162, -(sp)    ; arg1: buffer = строка для счёта
+ *   jsr   pc, @#R_0888    ; convert счёт → ASCII
+ *   sub   #12, sp         ; reserve again
+ *   mov   #1, -(sp)       ; count = 1
+ *   mov   #17436, -(sp)   ; source = &попытки
+ *   mov   #2204, -(sp)    ; buffer = строка для попыток
+ *   jsr   pc, @#R_0888
+ *   mov   #2154, r1       ; r1 = адрес «Счёт» строки
+ *   mov   #1437, r2       ; r2 = параметры для EMT 020 (длина+разделитель)
+ *   emt   020             ; print string
+ *   rts   pc
+ *
+ * R_0888 кладёт результат конверсии в буфер [r1..r1+5], которая входит
+ * в составную строку «Счёт XXXXXX Попыток XXXXXX», адрес которой
+ * передаётся в EMT 020.
+ *
+ * Стек-баланс: каждый цикл `sub #12, sp; pushes; jsr R_0888` тратит
+ * 18 байт, а R_0888 возвращает SP +18. Итого нет потерь.
+ * ------------------------------------------------------------------- */
+void R_07aa_print_score(void)
+{
+    /* mov #1, r2 — PSW.N=0, Z=0, V=0, C unchanged. */
+    cpu.r[2] = 1;
+    psw_nz_w(1);
+
+    /* clr r1 — PSW: N=0, Z=1, V=0, C=0. */
+    cpu.r[1] = 0;
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_V | PSW_C);
+    cpu.psw |= PSW_Z;
+
+    /* emt 024 — set cursor (r1, r2). */
+    emt_dispatch(024u);
+
+    /* sub #10dec (= 0o12), sp. */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 10u);
+
+    /* mov #1, -(sp). */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], 1);
+    psw_nz_w(1);
+
+    /* mov #17440 octal (= 0x1F20), -(sp). */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], 017440u);
+    psw_nz_w(017440u);
+
+    /* mov #2162 octal (= 0x472), -(sp). */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], 002162u);
+    psw_nz_w(002162u);
+
+    /* jsr pc, @#R_0888 — push PC return (0x07c6), call R_0888. */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], 0x07c6);
+    R_0888_int_to_dec();
+
+    /* sub #10dec, sp (second time). */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 10u);
+
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], 1);
+    psw_nz_w(1);
+
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], 017436u);
+    psw_nz_w(017436u);
+
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], 002204u);
+    psw_nz_w(002204u);
+
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], 0x07da);
+    R_0888_int_to_dec();
+
+    /* mov #2154 octal, r1. */
+    cpu.r[1] = 002154u;
+    psw_nz_w(002154u);
+
+    /* mov #1437 octal, r2. */
+    cpu.r[2] = 001437u;
+    psw_nz_w(001437u);
+
+    /* emt 020 — print string at r1 with len/delim from r2. */
+    emt_dispatch(020u);
+
+    rts_pc();
+}
+
 /* Тело R_1558 без rts_pc (для inline-использования из R_1522). */
 static void R_1558_body(void)
 {
@@ -1919,6 +2021,7 @@ static const struct {
      * оставлено в файле как разметка. */
     { 0001720u, R_01720_bel_dec_lives },  /* 0x03d0 */
     { 0003764u, R_07f4_lose_one },        /* 0x07f4 */
+    { 0003652u, R_07aa_print_score },     /* 0x07aa */
     { 0004210u, R_0888_int_to_dec },      /* 0x0888 */
     { 0005106u, R_0a46_draw_8rows_v2 },   /* 0x0a46 */
     { 0007432u, R_0f1a_anim_timer3 },     /* 0x0f1a */
