@@ -225,6 +225,8 @@ int main(int argc, char **argv)
 
     SDL_Event ev;
     int running = 1;
+    int paused = 0;
+    int fullscreen = 0;
     while (running) {
         while (SDL_PollEvent(&ev)) {
             switch (ev.type) {
@@ -245,6 +247,19 @@ int main(int argc, char **argv)
                              "klad2_dump_%02d%02d%02d.bin",
                              tm.tm_hour, tm.tm_min, tm.tm_sec);
                     dump_memory(path);
+                } else if (ev.key.keysym.sym == SDLK_F11) {
+                    /* Toggle полноэкранный режим (без смены разрешения —
+                     * SDL_WINDOW_FULLSCREEN_DESKTOP сохраняет рабочий стол). */
+                    fullscreen = !fullscreen;
+                    SDL_SetWindowFullscreen(g_window,
+                        fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+                } else if (ev.key.keysym.sym == SDLK_PAUSE ||
+                           ev.key.keysym.sym == SDLK_F9) {
+                    /* Pause/F9 — переключение паузы (без обработки ввода
+                     * игрой; CPU не тикает). */
+                    paused = !paused;
+                    SDL_SetWindowTitle(g_window,
+                        paused ? "КЛАД-2 (пауза)" : "КЛАД-2");
                 } else input_handle_sdl_event(&ev);
                 break;
             default:
@@ -253,7 +268,7 @@ int main(int argc, char **argv)
             }
         }
 
-        if (run_cpu && !cpu.halted) {
+        if (run_cpu && !cpu.halted && !paused) {
             int n = pdp11_run_n(g_steps_per_frame);
             bk_tick_timer((unsigned)n);
             audio_flush();
