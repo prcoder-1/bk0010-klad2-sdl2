@@ -555,6 +555,182 @@ enum {
 };
 
 /* ---------------------------------------------------------------------
+ * R_06462_e2_teleport — «телепорт врага E2» (0x0d32..0x0d68, 38 байт).
+ *
+ * Одна из 7 функций главного цикла (см. таблицу 0x0382..0x039c).
+ * Вызывается через `JSR pc, @#0x0d32` с адреса 0x039a.
+ *
+ * Алгоритм:
+ *   1. Читаем char_ptr_e2 (= mem[0o14442]) в r0.
+ *   2. Если byte at char_ptr_e2 != 0o15 (13) — RTS (нет специального
+ *      тайла под врагом).
+ *   3. Иначе — рисуем 2 glyph (стираем спрайт врага в текущем месте,
+ *      затем в смещённом на (-100, -1000)).
+ *   4. Загружаем новые координаты из таблицы по @#17430+0o20/0o22 в
+ *      mem[14442]/mem[14446].
+ *   5. Сбрасываем таймер @#17376 → 0.
+ *   6. RTS.
+ *
+ * Семантика: если враг E2 наступил на специальный тайл (тип 13 —
+ * скорее всего «дверь/телепорт»), его перемещают в новые координаты,
+ * сбрасывая анимационный таймер.
+ *
+ * Регистры по оригиналу (для AB-совместимости):
+ *   r0 — финал: mem[0o17430] (после `mov @#17430, r0`)
+ *   r1 — после second JSR R_14302: caller's r1 (восстановлено push/pop).
+ *        Но в R_06462 после second JSR делается `mov 22(r0), @#14446` —
+ *        r1 не модифицируется. Так что финал r1 = caller's r1.
+ *   r2 — финал: char_ptr_e2 - 0o100 (после `sub #100, r2`). После
+ *        second JSR R_14302 r2 = caller's r2 = same.
+ *   r3 — финал: после R_14302 = font_base + ch*16 + 16.
+ *   PSW — от `clr @#17376` (N=0, Z=1, V=0, C=0).
+ * ------------------------------------------------------------------- */
+void R_06462_e2_teleport(void)
+{
+    /* mov @#14442, r0. */
+    cpu.r[0] = bk_read_w(0014442u);
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+    if ((int16_t)cpu.r[0] < 0) cpu.psw |= PSW_N;
+    if (cpu.r[0] == 0)         cpu.psw |= PSW_Z;
+
+    /* cmpb #15, (r0) — сравнить 0o15 c байтом по char_ptr_e2. */
+    uint8_t b = bk_read_b(cpu.r[0]);
+    {
+        uint8_t res = (uint8_t)(0015u - b);
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V | PSW_C);
+        if ((int8_t)res < 0) cpu.psw |= PSW_N;
+        if (res == 0)        cpu.psw |= PSW_Z;
+        if ((uint8_t)((0015u ^ b) & (0015u ^ res) & 0x80u)) cpu.psw |= PSW_V;
+        if (0015u < b) cpu.psw |= PSW_C;
+    }
+
+    /* bne 0x0d68 — берётся при не-равенстве. */
+    if (b != 0015u) {
+        rts_pc();
+        return;
+    }
+
+    /* mov @#14442, r2; mov @#14446, r1. */
+    cpu.r[2] = bk_read_w(0014442u);
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+    if ((int16_t)cpu.r[2] < 0) cpu.psw |= PSW_N;
+    if (cpu.r[2] == 0)         cpu.psw |= PSW_Z;
+
+    cpu.r[1] = bk_read_w(0014446u);
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+    if ((int16_t)cpu.r[1] < 0) cpu.psw |= PSW_N;
+    if (cpu.r[1] == 0)         cpu.psw |= PSW_Z;
+
+    /* jsr pc, @#R_14302 — первый glyph.
+     * Эмулируем эффекты R_14302 на cpu.r[3] и стеке. */
+    {
+        uint8_t ch = bk_read_b(cpu.r[2]);
+        /* push r5, push r1 на стек (как делает R_14302 prologue). */
+        cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+        bk_write_w(cpu.r[6], cpu.r[5]);
+        cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+        bk_write_w(cpu.r[6], cpu.r[1]);
+        /* Рисуем (используя inline). */
+        inline_draw_glyph(cpu.r[2], cpu.r[1]);
+        /* После цикла: r3 = font_base + ch*16 + 16, r5 = 0. */
+        cpu.r[3] = (uint16_t)(KLAD2_FONT_BASE + (unsigned)ch * 16u + 16u);
+        /* C-flag: переполнение последнего `add #100, r1` в 8-й итерации. */
+        {
+            uint16_t r1_prev = (uint16_t)(cpu.r[1] + 7u * SCREEN_ROW_BYTES);
+            uint16_t r1_last = (uint16_t)(r1_prev + SCREEN_ROW_BYTES);
+            if (r1_last < r1_prev) cpu.psw |= PSW_C;
+            else                    cpu.psw &= (uint16_t)~PSW_C;
+        }
+        /* pop r1, pop r5 (восстанавливаем оригинал). */
+        cpu.r[1] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+        cpu.r[5] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+        /* PSW от mov (sp)+, r5 (последнего pop): N/Z по r5. */
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+        if ((int16_t)cpu.r[5] < 0) cpu.psw |= PSW_N;
+        if (cpu.r[5] == 0)         cpu.psw |= PSW_Z;
+    }
+
+    /* sub #100, r2. */
+    {
+        uint16_t a = cpu.r[2];
+        uint16_t src = 0100u;
+        uint16_t r = (uint16_t)(a - src);
+        cpu.r[2] = r;
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V | PSW_C);
+        if ((int16_t)r < 0) cpu.psw |= PSW_N;
+        if (r == 0)          cpu.psw |= PSW_Z;
+        if ((a ^ src) & (a ^ r) & 0x8000u) cpu.psw |= PSW_V;
+        if (a < src) cpu.psw |= PSW_C;
+    }
+
+    /* sub #1000, r1. */
+    {
+        uint16_t a = cpu.r[1];
+        uint16_t src = 01000u;
+        uint16_t r = (uint16_t)(a - src);
+        cpu.r[1] = r;
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V | PSW_C);
+        if ((int16_t)r < 0) cpu.psw |= PSW_N;
+        if (r == 0)          cpu.psw |= PSW_Z;
+        if ((a ^ src) & (a ^ r) & 0x8000u) cpu.psw |= PSW_V;
+        if (a < src) cpu.psw |= PSW_C;
+    }
+
+    /* jsr pc, @#R_14302 — второй glyph (теми же эффектами на регистры). */
+    {
+        uint8_t ch = bk_read_b(cpu.r[2]);
+        cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+        bk_write_w(cpu.r[6], cpu.r[5]);
+        cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+        bk_write_w(cpu.r[6], cpu.r[1]);
+        inline_draw_glyph(cpu.r[2], cpu.r[1]);
+        cpu.r[3] = (uint16_t)(KLAD2_FONT_BASE + (unsigned)ch * 16u + 16u);
+        {
+            uint16_t r1_prev = (uint16_t)(cpu.r[1] + 7u * SCREEN_ROW_BYTES);
+            uint16_t r1_last = (uint16_t)(r1_prev + SCREEN_ROW_BYTES);
+            if (r1_last < r1_prev) cpu.psw |= PSW_C;
+            else                    cpu.psw &= (uint16_t)~PSW_C;
+        }
+        cpu.r[1] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+        cpu.r[5] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+        if ((int16_t)cpu.r[5] < 0) cpu.psw |= PSW_N;
+        if (cpu.r[5] == 0)         cpu.psw |= PSW_Z;
+    }
+
+    /* mov @#17430, r0. */
+    cpu.r[0] = bk_read_w(0017430u);
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+    if ((int16_t)cpu.r[0] < 0) cpu.psw |= PSW_N;
+    if (cpu.r[0] == 0)         cpu.psw |= PSW_Z;
+
+    /* mov 20(r0), @#14442 — новый char_ptr. */
+    {
+        uint16_t v = bk_read_w((uint16_t)(cpu.r[0] + 020u));
+        bk_write_w(0014442u, v);
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+        if ((int16_t)v < 0) cpu.psw |= PSW_N;
+        if (v == 0)          cpu.psw |= PSW_Z;
+    }
+
+    /* mov 22(r0), @#14446 — новый X. */
+    {
+        uint16_t v = bk_read_w((uint16_t)(cpu.r[0] + 022u));
+        bk_write_w(0014446u, v);
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+        if ((int16_t)v < 0) cpu.psw |= PSW_N;
+        if (v == 0)          cpu.psw |= PSW_Z;
+    }
+
+    /* clr @#17376 — сброс таймера. PSW: N=0, Z=1, V=0, C=0. */
+    bk_write_w(0017376u, 0);
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_V | PSW_C);
+    cpu.psw |= PSW_Z;
+
+    rts_pc();
+}
+
+/* ---------------------------------------------------------------------
  * R_06632_main_e2 — обработчик ИИ врага #2 ВЕРХНЕГО УРОВНЯ
  * (0x0d6a..0x0e80, 278 байт).
  *
@@ -789,6 +965,7 @@ static const struct {
      * AB-инфраструктура её тоже не покрывает корректно по той же
      * причине (snapshot/restore работают только для функций с честной
      * JSR/RTS-семантикой). */
+    { 0006462u, R_06462_e2_teleport },
     { 0007202u, R_07202_anim_tick_e2_move },
     { 0007242u, R_07242_anim_tick_e2_idle },
     { 0010102u, R_10102_anim_tick_e1_move },
