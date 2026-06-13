@@ -1330,6 +1330,118 @@ void R_15ce_clear_cell(void)
     rts_pc();
 }
 
+/* Тело R_1558 без rts_pc (для inline-использования из R_1522). */
+static void R_1558_body(void)
+{
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[3]);
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[2]);
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[1]);
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[5]);
+    cpu.r[5] = 0010u;
+    psw_nz_w(cpu.r[5]);
+    for (unsigned i = 0; i < 8; i++) {
+        uint16_t w = bk_read_w(cpu.r[2]);
+        bk_write_w((uint16_t)(SCREEN_DRAW_BASE + cpu.r[1]), w);
+        cpu.r[2] = (uint16_t)(cpu.r[2] + 2u);
+        cpu.r[1] = (uint16_t)(cpu.r[1] + SCREEN_ROW_BYTES);
+        cpu.r[5]--;
+    }
+    {
+        uint16_t r1_prev = (uint16_t)(cpu.r[1] - SCREEN_ROW_BYTES);
+        if (cpu.r[1] < r1_prev) cpu.psw |= PSW_C;
+        else                     cpu.psw &= (uint16_t)~PSW_C;
+    }
+    cpu.r[5] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+    cpu.r[1] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+    cpu.r[2] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+    cpu.r[3] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+    psw_nz_w(cpu.r[3]);
+}
+
+/* ---------------------------------------------------------------------
+ * R_1522_draw_map — полный рендер карты уровня (22×32 = 704 ячейки).
+ * (0x1522..0x1556, 54 байта, 14 инструкций.)
+ *
+ * Двойной цикл sob: outer 22 раза, inner 32 раза. На каждой итерации:
+ *   r2 = byte из карты (4 low bits = индекс глифа в шрифте);
+ *   r2 <<= 4 → font offset;
+ *   r2 += 0o17450 → font_base + offset;
+ *   jsr R_1558 (нарисовать 8 строк по позиции r1);
+ *   r1 += 2 (следующая колонка).
+ * После inner: pop r1; r1 += 0o1000 (= 512, восемь строк экрана).
+ *
+ * Вход: ничего (использует свои константы).
+ * Финал:
+ *   r1 = 22 * 0o1000 = 0o26000
+ *   r2 = font ptr последнего глифа
+ *   r3 = 0 (sob exit)
+ *   r4 = 0o14550 + 1408 байт = 0o17350 (= конец карты)
+ *   r5 = 0 (outer sob exit)
+ *   PSW от последнего add #1000, r1.
+ * ------------------------------------------------------------------- */
+void R_1522_draw_map(void)
+{
+    cpu.r[4] = MAP_BASE;  /* 0o14550 */
+    psw_nz_w(cpu.r[4]);
+    cpu.r[1] = 0;
+    psw_nz_w(cpu.r[1]);
+    cpu.r[5] = 0026u;     /* 22 */
+    psw_nz_w(cpu.r[5]);
+
+    while (1) {
+        /* push r1. */
+        cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+        bk_write_w(cpu.r[6], cpu.r[1]);
+
+        cpu.r[3] = 0040u;  /* 32 */
+        psw_nz_w(cpu.r[3]);
+
+        while (1) {
+            /* mov (r4)+, r2. */
+            cpu.r[2] = bk_read_w(cpu.r[4]);
+            cpu.r[4] = (uint16_t)(cpu.r[4] + 2u);
+
+            /* bic #177760, r2; asl x4; add #17450, r2. */
+            cpu.r[2] &= 0017u;
+            cpu.r[2] <<= 4;
+            cpu.r[2] = (uint16_t)(cpu.r[2] + 017450u);
+
+            /* jsr pc, R_1558 — inline тело. */
+            R_1558_body();
+
+            /* add #2, r1. */
+            cpu.r[1] = (uint16_t)(cpu.r[1] + 2u);
+
+            /* sob r3 — decrement, jump back if not zero. */
+            cpu.r[3]--;
+            if (cpu.r[3] == 0) break;
+        }
+
+        /* pop r1. */
+        cpu.r[1] = bk_read_w(cpu.r[6]);
+        cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+
+        /* add #1000, r1. */
+        uint16_t r1_prev = cpu.r[1];
+        cpu.r[1] = (uint16_t)(cpu.r[1] + 01000u);
+
+        /* sob r5. */
+        cpu.r[5]--;
+        if (cpu.r[5] == 0) {
+            /* Финальное PSW от add #1000, r1: N/Z/V/C. */
+            cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V | PSW_C);
+            if ((int16_t)cpu.r[1] < 0) cpu.psw |= PSW_N;
+            if (cpu.r[1] == 0)         cpu.psw |= PSW_Z;
+            if ((uint16_t)(~(r1_prev ^ 01000u) & (r1_prev ^ cpu.r[1]) & 0x8000u))
+                cpu.psw |= PSW_V;
+            if (cpu.r[1] < r1_prev)    cpu.psw |= PSW_C;
+            break;
+        }
+    }
+
+    rts_pc();
+}
+
 /* ---------------------------------------------------------------------
  * R_0a46_draw_8rows_v2 — копия R_1558 семантически.
  * (0x0a46..0x0a64, 32 байта, 11 инструкций.)
@@ -1683,6 +1795,7 @@ static const struct {
     { 0003764u, R_07f4_lose_one },        /* 0x07f4 */
     { 0005106u, R_0a46_draw_8rows_v2 },   /* 0x0a46 */
     { 0007432u, R_0f1a_anim_timer3 },     /* 0x0f1a */
+    { 0012442u, R_1522_draw_map },        /* 0x1522 */
     { 0012530u, R_1558_draw_8rows },      /* 0x1558 */
     { 0012326u, R_14d6_bel },             /* 0x14d6 */
     { 0012716u, R_15ce_clear_cell },      /* 0x15ce */
