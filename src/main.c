@@ -155,23 +155,8 @@ static void sdl_teardown(void)
     SDL_Quit();
 }
 
-/* ---------------- Демо-паттерн Фазы 1 ------------------------------- */
-
-static void fill_demo_pattern(void)
-{
-    uint8_t *vid = &bk_mem[MEM_VIDEO];
-    for (int y = 0; y < SCREEN_PIX_HEIGHT / 2; y++) {
-        uint8_t *row = &vid[y * SCREEN_BYTE_WIDTH];
-        for (int xb = 0; xb < SCREEN_BYTE_WIDTH; xb++) {
-            unsigned color = (unsigned)(xb / 16) & 0x3;
-            row[xb] = (uint8_t)(color * 0x55u);
-        }
-    }
-    for (int y = SCREEN_PIX_HEIGHT / 2; y < SCREEN_PIX_HEIGHT; y++) {
-        uint8_t *row = &vid[y * SCREEN_BYTE_WIDTH];
-        for (int xb = 0; xb < SCREEN_BYTE_WIDTH; xb++) row[xb] = 0xE4u;
-    }
-}
+/* Демо-паттерн Фазы 1 удалён — теперь по-умолчанию запускается
+ * встроенное состояние КЛАД-2 (см. klad2_initial.c). */
 
 /* ---------------- main ----------------------------------------------- */
 
@@ -408,7 +393,21 @@ int main(int argc, char **argv)
             return cpu.halted ? EXIT_FAILURE : EXIT_SUCCESS;
         }
     } else {
-        fill_demo_pattern();
+        /* Ни BIN, ни --fast-start не указаны — пробуем встроенное
+         * состояние из src/klad2_initial.c (snapshot после релокатора). */
+        extern void klad2_load_builtin_state(void);
+        extern const uint16_t klad2_initial_regs[8];
+        extern const uint16_t klad2_initial_psw;
+        klad2_load_builtin_state();
+        for (int i = 0; i < 8; i++) cpu.r[i] = klad2_initial_regs[i];
+        cpu.psw    = klad2_initial_psw;
+        cpu.halted = 0;
+        pdp11_set_emt_handler(emt_dispatch);
+        pdp11_set_trace(trace);
+        run_cpu = 1;
+        fprintf(stderr,
+                "Запущено со встроенным состоянием: PC=%06o, SP=%06o\n",
+                cpu.r[7], cpu.r[6]);
     }
 
     SDL_Event ev;
