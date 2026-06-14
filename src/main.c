@@ -287,8 +287,9 @@ int main(int argc, char **argv)
     int trace = 0;
     long max_steps = -1;
     const char *bin_path = NULL;
-    const char *rom_path =
-        "/home/prcoder/emulators/БК-0010-01/bkemu/ROM/bk10_017_mon.rom";
+    /* По-умолчанию используется встроенный шрифт и Monitor-ROM
+     * (src/klad2_font.c, src/klad2_mon_rom.c). --rom path подмена. */
+    const char *rom_path = NULL;
     const char *dump_path = NULL;
     const char *snap_save_path = NULL;
     const char *snap_load_path = NULL;
@@ -345,25 +346,15 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    /* Загрузим БК-шрифт из Monitor-ПЗУ, если он доступен. Без шрифта
-     * EMT 016 не рисует символы, но всё прочее работает. */
-    if (bk_load_rom_font(rom_path) != 0) {
-        fprintf(stderr,
-                "Шрифт БК недоступен (%s). EMT 016 будет молча "
-                "пропускать печатные символы.\n", rom_path);
-    } else {
-        fprintf(stderr, "Шрифт БК загружен из %s\n", rom_path);
-    }
-
-    /* Также загрузим полный образ Monitor-ПЗУ в bk_mem[0o100000..],
-     * чтобы КЛАД-2 могла вызывать ROM-функции напрямую через JSR
-     * (в частности, звуковой сигнал «плюканье клавиш»). */
-    if (bk_load_rom_image(rom_path) != 0) {
-        fprintf(stderr,
-                "Образ Monitor-ПЗУ не загружен — звуки выстрела/стен "
-                "могут отсутствовать.\n");
-    } else {
-        fprintf(stderr, "Образ Monitor-ПЗУ загружен в bk_mem[0o100000]\n");
+    /* Шрифт БК и образ Monitor-ROM теперь встроены в бинарник
+     * (src/klad2_font.c, src/klad2_mon_rom.c). bk_reset() уже
+     * загружает встроенный ROM. Внешний файл нужен только если
+     * пользователь явно подменяет шрифт через --rom path/to/X.rom. */
+    if (rom_path && rom_path[0]) {
+        if (bk_load_rom_font(rom_path) == 0)
+            fprintf(stderr, "Шрифт БК подменён из %s\n", rom_path);
+        if (bk_load_rom_image(rom_path) == 0)
+            fprintf(stderr, "Monitor-ROM подменён из %s\n", rom_path);
     }
 
     int run_cpu = 0;

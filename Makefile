@@ -28,7 +28,7 @@ DEPS      := $(APP_OBJS:.o=.d) $(TEST_OBJS:.o=.d)
 BIN       := klad2
 
 # Объекты для тест-бинарника — только не-SDL2-модули.
-TEST_DEPS := $(BUILD)/bk.o $(BUILD)/pdp11.o $(BUILD)/audio.o $(BUILD)/routines.o $(BUILD)/emt.o
+TEST_DEPS := $(BUILD)/bk.o $(BUILD)/pdp11.o $(BUILD)/audio.o $(BUILD)/routines.o $(BUILD)/emt.o $(BUILD)/klad2_font.o $(BUILD)/klad2_mon_rom.o
 
 .PHONY: all run test clean
 

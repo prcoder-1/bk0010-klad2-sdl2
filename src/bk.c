@@ -20,15 +20,24 @@
 
 uint8_t bk_mem[BK_MEM_SIZE];
 
-/* ----- Шрифт БК-Monitor 017 ------------------------------------------ */
-/* Загружается из bk10_017_mon.rom при старте, см. bk_load_rom_font().  */
+/* ----- Шрифт БК-Monitor 017 ------------------------------------------ *
+ *
+ * Извлечён в `src/klad2_font.c` как `klad2_font_data[2080]` (208 глифов
+ * × 10 байт). По-умолчанию используется встроенный массив — внешний
+ * ROM-файл не нужен. `bk_load_rom_font(path)` оставлен для совмести-
+ * мости и для случаев, когда нужно подгрузить ДРУГОЙ шрифт. */
 #define BK_FONT_ROM_OFFSET  0x141Eu
 #define BK_FONT_GLYPH_SIZE  10u
-/* Максимальный индекс глифа: для кода 0o377 → idx = 0o377 - 0o60 = 0o317 = 207.
- * Значит нужно 208 глифов × 10 байт = 2080 байт. */
 #define BK_FONT_NUM_GLYPHS  208u
-static uint8_t g_font[BK_FONT_NUM_GLYPHS * BK_FONT_GLYPH_SIZE];
-static int     g_font_loaded;
+
+extern const uint8_t  klad2_font_data[];           /* в klad2_font.c */
+extern const unsigned KLAD2_FONT_NUM_GLYPHS;
+extern const unsigned KLAD2_FONT_GLYPH_SIZE;
+
+/* g_font_ptr указывает либо на встроенный массив (по-умолчанию),
+ * либо на g_font_loaded_buf (после bk_load_rom_font). */
+static uint8_t        g_font_loaded_buf[BK_FONT_NUM_GLYPHS * BK_FONT_GLYPH_SIZE];
+static const uint8_t *g_font_ptr = klad2_font_data;
 
 int bk_load_rom_font(const char *path)
 {
@@ -44,16 +53,27 @@ int bk_load_rom_font(const char *path)
         fclose(f);
         return -1;
     }
-    size_t n = fread(g_font, 1, sizeof g_font, f);
+    size_t n = fread(g_font_loaded_buf, 1, sizeof g_font_loaded_buf, f);
     fclose(f);
-    if (n != sizeof g_font) {
+    if (n != sizeof g_font_loaded_buf) {
         fprintf(stderr,
                 "bk_load_rom_font: прочитано %zu байт вместо %zu из '%s'\n",
-                n, sizeof g_font, path);
+                n, sizeof g_font_loaded_buf, path);
         return -1;
     }
-    g_font_loaded = 1;
+    g_font_ptr = g_font_loaded_buf;
     return 0;
+}
+
+extern const uint8_t  klad2_mon_rom_data[];        /* в klad2_mon_rom.c */
+extern const unsigned KLAD2_MON_ROM_SIZE;
+
+/* Загружает встроенный 8KB образ Monitor-ROM в bk_mem[0o100000].
+ * Вызывается из bk_reset(). Внешний path-вариант оставлен для
+ * совместимости и подмены альтернативного ROM (см. --rom). */
+void bk_load_embedded_rom(void)
+{
+    memcpy(&bk_mem[MEM_ROM_MON], klad2_mon_rom_data, KLAD2_MON_ROM_SIZE);
 }
 
 int bk_load_rom_image(const char *path)
@@ -78,7 +98,6 @@ int bk_load_rom_image(const char *path)
 
 const uint8_t *bk_font_glyph(uint8_t code)
 {
-    if (!g_font_loaded) return NULL;
     /* Семантика из дизассемблера EMT 016 в BK-Monitor 017:
      *  - коды 0..017     — управляющие, глифа нет;
      *  - коды 020..0177  — печатные, индекс = code - 020;
@@ -90,12 +109,16 @@ const uint8_t *bk_font_glyph(uint8_t code)
     else if (code < 0240)  return NULL;
     else                   idx = code - 060;
     if ((unsigned)idx >= BK_FONT_NUM_GLYPHS) return NULL;
-    return &g_font[idx * BK_FONT_GLYPH_SIZE];
+    return &g_font_ptr[idx * BK_FONT_GLYPH_SIZE];
 }
 
 void bk_reset(void)
 {
     memset(bk_mem, 0, sizeof bk_mem);
+    /* Загрузить встроенный Monitor-ROM в bk_mem[0o100000..]. КЛАД-2
+     * вызывает ROM-функции (звук BEL «плик») через прямые JSR на
+     * адреса 0o102xxx. Без ROM игра запустится, но без этих звуков. */
+    bk_load_embedded_rom();
     /* Регистр вертикального смещения после сброса БК = 0o330 — стандартное
      * значение, при котором экран начинается с начала видеоОЗУ.
      * (crt0.s в digger-bk0010 кладёт туда 0o1330 для смещённого скролла;
