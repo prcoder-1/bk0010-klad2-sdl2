@@ -817,6 +817,25 @@ static inline void psw_clr_set(void)
     cpu.psw |= PSW_Z;
 }
 
+/* Хелпер: XOR word — r = dst ^ src. PSW.NZ; V=0; C unchanged. */
+static inline uint16_t psw_xor_w(uint16_t src, uint16_t dst)
+{
+    uint16_t r = (uint16_t)(dst ^ src);
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+    if ((int16_t)r < 0) cpu.psw |= PSW_N;
+    if (r == 0)         cpu.psw |= PSW_Z;
+    return r;
+}
+
+/* Хелпер: BIT word — PSW.NZ по src & dst. V=0; C unchanged. */
+static inline void psw_bit_w(uint16_t src, uint16_t dst)
+{
+    uint16_t r = (uint16_t)(src & dst);
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+    if ((int16_t)r < 0) cpu.psw |= PSW_N;
+    if (r == 0)         cpu.psw |= PSW_Z;
+}
+
 /* Хелпер: ASR word (arithmetic shift right, sign-preserving). */
 static inline uint16_t psw_asr_w(uint16_t v)
 {
@@ -1572,6 +1591,217 @@ void R_0888_int_to_dec(void)
  * на каждый ход/действие игрока. Семантически «попытка совершена»,
  * не «получил жизнь».
  * ------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------
+ * R_15e0_anim_tick — анимация-тикер объекта (передняя часть R_15e0,
+ * 0x15e0..0x168a). Полная процедура простирается до 0x1752 с
+ * несколькими RTS/jmp на 0x14be/0x0bc8, но в моей C-замене мы покры-
+ * ваем только entry-часть от 0x15e0:
+ *   - нормальный путь (0x15e0..0x164c с rts pc) — рисование анимации
+ *   - death-путь (0x15fa: jmp @#$0bd4) — устанавливаем cpu.r[7] = 0x0bd4
+ *     и НЕ rts_pc; интерпретатор продолжит в death/reset handler
+ *   - expired-путь (0x164e..0x168a с jmp @#$0bc8) — отрисовка через
+ *     R_14302 + R_1558, потом cpu.r[7] = 0x0bc8 без rts
+ *
+ * Логика:
+ *   r4 = #12372 (точка состояния анимации, 12 байт),
+ *   r5 = #14420 (player state base),
+ *   копируем координаты X/Y из player'а в anim-state.
+ *   Если 4(r4) == 0 → death (никогда не возвращается).
+ *   Иначе:
+ *     r3 = r4 + 4(r4);
+ *     bit 2(r3), *0(r4) — проверка маски в указуемой ячейке:
+ *       не 0 → рисуем word из таблицы спрайтов 17460+r2*16 в видео 46400+r1,
+ *               двигаем координаты (4(r4) += (r3), 6(r4) += (r3)),
+ *               xor #1700 в видео (стереть/добавить блок),
+ *               clr r1; rts.
+ *       == 0 → expired: jsr R_14302; clear timer; push regs;
+ *               r5 = 21640 + 4(r4) + (r4); jsr R_1558;
+ *               pop regs; jmp @#$0bc8 (продолжение в другой функции).
+ *
+ * Helper для R_0efe (двойной таймер). Профайлер: 3925/12 сек.
+ *
+ * Зависимости: R_14302 (C ✅), R_1558 (C ✅).
+ * ------------------------------------------------------------------- */
+void R_15e0_anim_tick(void)
+{
+    /* mov #12372, r4 */
+    cpu.r[4] = 012372u;
+    psw_nz_w(cpu.r[4]);
+    /* mov #14420, r5 */
+    cpu.r[5] = 014420u;
+    psw_nz_w(cpu.r[5]);
+    /* mov 2(r5), 6(r4) — копировать X-координату. */
+    {
+        uint16_t v = bk_read_w((uint16_t)(cpu.r[5] + 2u));
+        bk_write_w((uint16_t)(cpu.r[4] + 6u), v);
+        psw_nz_w(v);
+    }
+    /* mov 6(r5), 10(r4) — копировать Y-координату. */
+    {
+        uint16_t v = bk_read_w((uint16_t)(cpu.r[5] + 6u));
+        bk_write_w((uint16_t)(cpu.r[4] + 010u), v);
+        psw_nz_w(v);
+    }
+    /* tst 4(r4); bne continue */
+    {
+        uint16_t v = bk_read_w((uint16_t)(cpu.r[4] + 4u));
+        psw_nz_w(v);
+        if (v == 0) {
+            /* jmp @#$0bd4 — death/reset, не возвращается. */
+            cpu.r[7] = 0x0bd4;
+            return;
+        }
+    }
+
+    /* 0x1614: mov r4, r3; add 4(r4), r3 */
+    cpu.r[3] = cpu.r[4];
+    psw_nz_w(cpu.r[3]);
+    cpu.r[3] = psw_add_w(bk_read_w((uint16_t)(cpu.r[4] + 4u)), cpu.r[3]);
+
+    /* 0x161a: bit 2(r3), *0(r4) — src=mem[r3+2], dst=mem[mem[r4+0]]. */
+    int expired;
+    {
+        uint16_t src = bk_read_w((uint16_t)(cpu.r[3] + 2u));
+        uint16_t ptr = bk_read_w(cpu.r[4]);
+        uint16_t dst = bk_read_w(ptr);
+        psw_bit_w(src, dst);
+        expired = ((cpu.psw & PSW_Z) != 0);  /* beq 0x164e */
+    }
+
+    if (!expired) {
+        /* === Нормальный путь 0x1622..0x164c === */
+        /* movb *0(r4), r2 — байт по deferred-указателю. */
+        {
+            uint16_t ptr = bk_read_w(cpu.r[4]);
+            uint8_t b = bk_read_b(ptr);
+            cpu.r[2] = (uint16_t)(int16_t)(int8_t)b;
+            psw_nz_b(b);
+        }
+        /* mov 2(r4), r1 */
+        cpu.r[1] = bk_read_w((uint16_t)(cpu.r[4] + 2u));
+        psw_nz_w(cpu.r[1]);
+        /* asl r2 × 4 */
+        cpu.r[2] = psw_asl_w(cpu.r[2]);
+        cpu.r[2] = psw_asl_w(cpu.r[2]);
+        cpu.r[2] = psw_asl_w(cpu.r[2]);
+        cpu.r[2] = psw_asl_w(cpu.r[2]);
+        /* mov 17460(r2), 46400(r1) — копировать word из таблицы в видео. */
+        {
+            uint16_t src_a = (uint16_t)(cpu.r[2] + 017460u);
+            uint16_t dst_a = (uint16_t)(cpu.r[1] + 046400u);
+            uint16_t v = bk_read_w(src_a);
+            bk_write_w(dst_a, v);
+            psw_nz_w(v);
+        }
+        /* add (r3), (r4) */
+        {
+            uint16_t src = bk_read_w(cpu.r[3]);
+            uint16_t dst = bk_read_w(cpu.r[4]);
+            bk_write_w(cpu.r[4], psw_add_w(src, dst));
+        }
+        /* add (r3), 2(r4) */
+        {
+            uint16_t src = bk_read_w(cpu.r[3]);
+            uint16_t a = (uint16_t)(cpu.r[4] + 2u);
+            uint16_t dst = bk_read_w(a);
+            bk_write_w(a, psw_add_w(src, dst));
+        }
+        /* mov #1700, r5 */
+        cpu.r[5] = 01700u;
+        psw_nz_w(cpu.r[5]);
+        /* mov 2(r4), r1 */
+        cpu.r[1] = bk_read_w((uint16_t)(cpu.r[4] + 2u));
+        psw_nz_w(cpu.r[1]);
+        /* xor r5, 46400(r1) */
+        {
+            uint16_t a = (uint16_t)(cpu.r[1] + 046400u);
+            uint16_t dst = bk_read_w(a);
+            bk_write_w(a, psw_xor_w(cpu.r[5], dst));
+        }
+        /* 0x164a: clr r1; rts pc */
+        cpu.r[1] = 0;
+        psw_clr_set();
+        rts_pc();
+        return;
+    }
+
+    /* === Expired-путь 0x164e..0x168a === */
+
+    /* mov (r4), r2 */
+    cpu.r[2] = bk_read_w(cpu.r[4]);
+    psw_nz_w(cpu.r[2]);
+    /* mov 2(r4), r1 */
+    cpu.r[1] = bk_read_w((uint16_t)(cpu.r[4] + 2u));
+    psw_nz_w(cpu.r[1]);
+    /* mov r3, -(sp) */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], cpu.r[3]);
+    psw_nz_w(cpu.r[3]);
+    /* jsr pc, R_14302 — retaddr 0x165a */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], 0x165a);
+    R_14302_draw_glyph_8x8();
+    /* mov (sp)+, r3 */
+    cpu.r[3] = bk_read_w(cpu.r[6]);
+    cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+    psw_nz_w(cpu.r[3]);
+    /* mov 4(r4), 16(r4) — 16 oct = 14 dec. */
+    {
+        uint16_t v = bk_read_w((uint16_t)(cpu.r[4] + 4u));
+        bk_write_w((uint16_t)(cpu.r[4] + 016u), v);
+        psw_nz_w(v);
+    }
+    /* clr 4(r4) */
+    bk_write_w((uint16_t)(cpu.r[4] + 4u), 0);
+    psw_clr_set();
+    /* mov r4, -(sp) */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], cpu.r[4]);
+    psw_nz_w(cpu.r[4]);
+    /* mov r1, -(sp) */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], cpu.r[1]);
+    psw_nz_w(cpu.r[1]);
+    /* mov r2, -(sp) */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], cpu.r[2]);
+    psw_nz_w(cpu.r[2]);
+    /* mov #14420, r4 */
+    cpu.r[4] = 014420u;
+    psw_nz_w(cpu.r[4]);
+    /* mov #21640, r5 */
+    cpu.r[5] = 021640u;
+    psw_nz_w(cpu.r[5]);
+    /* add 4(r4), r5 */
+    cpu.r[5] = psw_add_w(bk_read_w((uint16_t)(cpu.r[4] + 4u)), cpu.r[5]);
+    /* add (r4), r5 */
+    cpu.r[5] = psw_add_w(bk_read_w(cpu.r[4]), cpu.r[5]);
+    /* mov (r5), r2 */
+    cpu.r[2] = bk_read_w(cpu.r[5]);
+    psw_nz_w(cpu.r[2]);
+    /* mov 6(r4), r1 */
+    cpu.r[1] = bk_read_w((uint16_t)(cpu.r[4] + 6u));
+    psw_nz_w(cpu.r[1]);
+    /* jsr pc, R_1558 — retaddr 0x1684 */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], 0x1684);
+    R_1558_draw_8rows();
+    /* mov (sp)+, r2 */
+    cpu.r[2] = bk_read_w(cpu.r[6]);
+    cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+    psw_nz_w(cpu.r[2]);
+    /* mov (sp)+, r1 */
+    cpu.r[1] = bk_read_w(cpu.r[6]);
+    cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+    psw_nz_w(cpu.r[1]);
+    /* mov (sp)+, r4 */
+    cpu.r[4] = bk_read_w(cpu.r[6]);
+    cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+    psw_nz_w(cpu.r[4]);
+    /* jmp @#$0bc8 — НЕ возвращается через rts. */
+    cpu.r[7] = 0x0bc8;
+}
+
 /* ---------------------------------------------------------------------
  * R_1086_load_level — загрузка нового уровня в game state.
  * (0x1086..0x1102, 124 байт, 30 инструкций.)
@@ -3013,6 +3243,7 @@ static const struct {
     { 0012024u, R_1414_queue_handler },        /* 0x1414 */
     { 0013524u, R_1754_postprocess_map },      /* 0x1754 */
     { 0010206u, R_1086_load_level },           /* 0x1086 */
+    { 0012740u, R_15e0_anim_tick },            /* 0x15e0 — частичная замена */
     { 0007432u, R_0f1a_anim_timer3 },     /* 0x0f1a */
     { 0012442u, R_1522_draw_map },        /* 0x1522 */
     { 0012530u, R_1558_draw_8rows },      /* 0x1558 */

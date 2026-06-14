@@ -69,5 +69,6 @@ void R_09fe_draw_initial_map(void);
 void R_1414_queue_handler(void);
 void R_1754_postprocess_map(void);
 void R_1086_load_level(void);
+void R_15e0_anim_tick(void);
 
 #endif /* KLAD2_ROUTINES_H */
