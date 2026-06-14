@@ -41,8 +41,23 @@ static SDL_AudioDeviceID g_dev;
 static int16_t           g_level = -AUDIO_AMPLITUDE;
 static double            g_acc;          /* накопитель дробных сэмплов */
 static double            g_samples_per_step; /* AUDIO_RATE / CPU_RATE */
+static int               g_samples_steps_per_frame; /* для пересчёта */
 static int16_t           g_buf[AUDIO_FRAME_BUF];
 static int               g_buf_pos;
+
+/* Пересчитать g_samples_per_step под текущий g_steps_per_frame.
+ * Вызывается лениво из audio_step при изменении скорости (адаптивный
+ * темп gameplay vs startup переключает g_steps_per_frame между
+ * 4000 и 150). Без пересчёта при speed=150 g_samples_per_step=0.184
+ * (заложенное под 4000), и буфер заполняется в 27 раз медленнее
+ * нужного, SDL подкидывает старые данные → характерный треск. */
+static void recalc_sample_rate(void)
+{
+    int cpu_rate = g_steps_per_frame * 60;
+    if (cpu_rate < 1) cpu_rate = 240000;
+    g_samples_per_step       = (double)AUDIO_SAMPLE_RATE / (double)cpu_rate;
+    g_samples_steps_per_frame = g_steps_per_frame;
+}
 
 int audio_init(void)
 {
@@ -68,10 +83,10 @@ int audio_init(void)
 
     /* Подсчёт частоты сэмплинга относительно скорости CPU.
      * При g_steps_per_frame=4000 и 60 fps это ≈ 0.184 сэмпла на
-     * инструкцию (44100 / 240000). */
-    int cpu_rate = g_steps_per_frame * 60;
-    if (cpu_rate < 1) cpu_rate = 240000;
-    g_samples_per_step = (double)AUDIO_SAMPLE_RATE / (double)cpu_rate;
+     * инструкцию (44100 / 240000); при g_steps_per_frame=150 в
+     * gameplay-фазе уже 4.9 (44100 / 9000). recalc_sample_rate
+     * автоматически следит за сменой темпа. */
+    recalc_sample_rate();
 
     SDL_PauseAudioDevice(g_dev, 0);
     return 0;
@@ -118,11 +133,24 @@ static void audio_log_tick(void)
 
 void audio_step(void)
 {
+    /* Адаптивный темп: если main.c переключил g_steps_per_frame
+     * (например с 4000 на 150 при входе в gameplay), пересчитать
+     * соотношение сэмплов к step'ам. */
+    if (g_steps_per_frame != g_samples_steps_per_frame) {
+        recalc_sample_rate();
+    }
+
     g_acc += g_samples_per_step;
-    if (g_acc >= 1.0 && g_buf_pos < AUDIO_FRAME_BUF) {
+    /* WHILE, не IF: при g_samples_per_step > 1 (например 4.9 в
+     * gameplay) нам нужно класть НЕСКОЛЬКО сэмплов за один step,
+     * иначе буфер не заполняется и SDL играет рваные кусочки. */
+    while (g_acc >= 1.0 && g_buf_pos < AUDIO_FRAME_BUF) {
         g_buf[g_buf_pos++] = g_level;
         g_acc -= 1.0;
     }
+    /* Если буфер переполнен — спустим acc, чтобы не было «врождённого»
+     * долга, который вызовет всплеск на следующем кадре. */
+    if (g_buf_pos >= AUDIO_FRAME_BUF) g_acc = 0;
 }
 
 void audio_emit_bell(void)

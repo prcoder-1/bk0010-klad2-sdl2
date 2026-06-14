@@ -126,7 +126,7 @@ static void inject_key(SDL_Keycode k, int down)
  * Не static — нужен из audio.c для подбора частоты сэмплинга. */
 int g_steps_per_frame      = 4000;  /* текущее значение */
 int g_speed_startup        = 4000;
-int g_speed_gameplay       = 65;
+int g_speed_gameplay       = 150;
 int g_speed_user_locked    = 0;     /* 1 если --speed задан явно */
 /* g_in_gameplay живёт в routines.c (доступен и тест-бинарнику). */
 extern int g_in_gameplay;
