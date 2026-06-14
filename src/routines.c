@@ -1592,6 +1592,117 @@ void R_0888_int_to_dec(void)
  * не «получил жизнь».
  * ------------------------------------------------------------------- */
 /* ---------------------------------------------------------------------
+ * R_1578_special_tile — обработчик спецтайлов под героем.
+ * (0x1578..0x15cc, 84 байт, ~20 инструкций.)
+ *
+ * Читает байт типа из ячейки карты под игроком (через указатель
+ * @#14422) и обрабатывает 4 типа спецтайлов:
+ *
+ *   тип 11: «дверь снаружи» — заменить на #17 (дверь изнутри),
+ *           jmp @#$09a0 (handler «вошёл в дверь», не возвращается).
+ *   тип 4:  «убивающий» — clrb; jsr R_07f4_lose_one (штраф жизни).
+ *   тип 5:  «доп. попытка» — clrb; jsr R_07e6_inc_attempts.
+ *   тип 6:  «клад» — movb #20 (стереть); очистить 2 связанные ячейки
+ *           через R_15ce_clear_cell (адреса @#17424, @#17426);
+ *           jsr R_0430 (нет C-замены, через интерпретатор).
+ *   иначе:  rts.
+ *
+ * Один из 7 hot-функций main loop'а (23549/12 сек), но почти все
+ * вызовы — fast path «иначе → rts» (ячейка под героем = 0).
+ *
+ * Подцепи: R_07f4 (C ✅), R_07e6 (C ✅), R_15ce (C ✅), R_0430 (не C).
+ * При R_0430 — передаём интерпретатору через push retaddr + set PC.
+ * Также при jmp на 0x09a0 (тип 11) — не возвращаемся через rts.
+ * ------------------------------------------------------------------- */
+void R_1578_special_tile(void)
+{
+    /* mov @#14422, r3 — указатель на ячейку карты под героем. */
+    cpu.r[3] = bk_read_w(014422u);
+    psw_nz_w(cpu.r[3]);
+
+    /* === Тип 11 === */
+    {
+        uint8_t b = bk_read_b(cpu.r[3]);
+        psw_cmp_b(011u, b);
+        if (b == 011u) {
+            /* movb #17, (r3) */
+            bk_write_b(cpu.r[3], 017u);
+            psw_nz_b(017u);
+            /* jmp @#$09a0 — не rts. */
+            cpu.r[7] = 0x09a0;
+            return;
+        }
+    }
+
+    /* === Тип 4 === */
+    {
+        uint8_t b = bk_read_b(cpu.r[3]);
+        psw_cmp_b(04u, b);
+        if (b == 04u) {
+            /* clrb (r3) */
+            bk_write_b(cpu.r[3], 0);
+            psw_clr_set();
+            /* jsr pc, R_07f4 — retaddr 0x15a2. */
+            cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+            bk_write_w(cpu.r[6], 0x15a2);
+            R_07f4_lose_one();
+            if (cpu.r[7] != 0x15a2) return;
+        }
+    }
+
+    /* === Тип 5 === */
+    {
+        uint8_t b = bk_read_b(cpu.r[3]);
+        psw_cmp_b(05u, b);
+        if (b == 05u) {
+            /* clrb (r3) */
+            bk_write_b(cpu.r[3], 0);
+            psw_clr_set();
+            /* jsr pc, R_07e6 — retaddr 0x15ae. */
+            cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+            bk_write_w(cpu.r[6], 0x15ae);
+            R_07e6_inc_attempts();
+            if (cpu.r[7] != 0x15ae) return;
+        }
+    }
+
+    /* === Тип 6: clear cells + R_0430 (нет C, через интерпретатор). === */
+    {
+        uint8_t b = bk_read_b(cpu.r[3]);
+        psw_cmp_b(06u, b);
+        if (b == 06u) {
+            /* movb #20, (r3) */
+            bk_write_b(cpu.r[3], 020u);
+            psw_nz_b(020u);
+            /* mov @#17424, r5; jsr R_15ce — retaddr 0x15c0. */
+            cpu.r[5] = bk_read_w(017424u);
+            psw_nz_w(cpu.r[5]);
+            cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+            bk_write_w(cpu.r[6], 0x15c0);
+            R_15ce_clear_cell();
+            if (cpu.r[7] != 0x15c0) return;
+            /* mov @#17426, r5; jsr R_15ce — retaddr 0x15c8. */
+            cpu.r[5] = bk_read_w(017426u);
+            psw_nz_w(cpu.r[5]);
+            cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+            bk_write_w(cpu.r[6], 0x15c8);
+            R_15ce_clear_cell();
+            if (cpu.r[7] != 0x15c8) return;
+            /* jsr pc, R_0430 — retaddr 0x15cc. Нет C-замены; передаём
+             * интерпретатору через push retaddr + cpu.r[7] = 0x0430.
+             * Интерпретатор R_0430 сделает rts → cpu.r[7] = 0x15cc,
+             * там стоит rts pc — interp выполнит и вернётся в caller. */
+            cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+            bk_write_w(cpu.r[6], 0x15cc);
+            cpu.r[7] = 0x0430;
+            return;  /* НЕ rts_pc. */
+        }
+    }
+
+    rts_pc();
+}
+
+/* ---------------------------------------------------------------------
  * R_0efe_double_timer — таймер с порогом 4 + двумя hot-helper'ами.
  * (0x0efe..0x0f18, 28 байт, 8 инструкций.)
  *
@@ -3311,6 +3422,7 @@ static const struct {
     { 0010206u, R_1086_load_level },           /* 0x1086 */
     { 0012740u, R_15e0_anim_tick },            /* 0x15e0 — частичная замена */
     { 0007376u, R_0efe_double_timer },         /* 0x0efe */
+    { 0012570u, R_1578_special_tile },         /* 0x1578 */
     { 0007432u, R_0f1a_anim_timer3 },     /* 0x0f1a */
     { 0012442u, R_1522_draw_map },        /* 0x1522 */
     { 0012530u, R_1558_draw_8rows },      /* 0x1558 */

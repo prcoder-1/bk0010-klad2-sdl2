@@ -137,6 +137,7 @@ static const struct {
     { 0010206u, R_1086_load_level,            "R_1086"  },
     { 0012740u, R_15e0_anim_tick,             "R_15e0"  },
     { 0007376u, R_0efe_double_timer,          "R_0efe"  },
+    { 0012570u, R_1578_special_tile,          "R_1578"  },
     { 0006552u, R_06632_main_e2,              "R_06632" }, /* настоящий entry 0x0d6a */
     { 0007306u, R_07306_hero_teleport,        "R_07306" },
     { 0007462u, R_07462_main_e1,              "R_07462" },
