@@ -107,12 +107,28 @@ static void inject_key(SDL_Keycode k, int down)
 /* Сколько инструкций крутим между кадрами SDL2 (60 fps под VSYNC).
  * По-хорошему БК-0010 на 3 МГц даёт ≈ 600 тыс. инструкций/с,
  * т.е. ~10 тыс. на кадр при 60 fps. Но КЛАД-2 использует busy-loop
- * задержки и оптимизировался под средний (~5 c/instr) PDP-11; при
- * 10 000 инструкций/кадр геймплей идёт визуально быстрее оригинала.
- * Значение 4000 подобрано визуальным сравнением с эмулятором.
- * Регулируется флагом --speed N.
+ * задержки и оптимизировался под средний (~5 c/instr) PDP-11.
+ *
+ * АДАПТИВНЫЙ темп: с 33 C-заменами один pdp11_step может делать
+ * сотни эквивалентных PDP-11-инструкций, поэтому фиксированная
+ * скорость даёт катастрофически быстрый main loop в gameplay-фазе
+ * (1747 itercises/сек при --speed 4000 против ожидаемых ~50).
+ *
+ * Решение: высокий speed для startup (заставка/меню — много EMT 020
+ * на рисование текста, нужен темп), низкий для gameplay
+ * (main loop игры быстрый в C, надо тормозить). Переключение —
+ * при первом вызове R_06462 (главная функция main loop'а),
+ * через флаг `g_in_gameplay`.
+ *
+ * --speed N принудительно фиксирует одно значение и отключает
+ * адаптацию.
+ *
  * Не static — нужен из audio.c для подбора частоты сэмплинга. */
-int g_steps_per_frame = 4000;
+int g_steps_per_frame      = 4000;  /* текущее значение */
+int g_speed_startup        = 4000;
+int g_speed_gameplay       = 65;
+int g_speed_user_locked    = 0;     /* 1 если --speed задан явно */
+int g_in_gameplay          = 0;     /* устанавливается из R_06462 */
 
 static SDL_Window   *g_window;
 static SDL_Renderer *g_renderer;
@@ -288,7 +304,8 @@ int main(int argc, char **argv)
             rom_path = argv[++i];
         } else if (strcmp(argv[i], "--speed") == 0 && i + 1 < argc) {
             g_steps_per_frame = (int)strtol(argv[++i], NULL, 0);
-            if (g_steps_per_frame < 100) g_steps_per_frame = 100;
+            if (g_steps_per_frame < 10) g_steps_per_frame = 10;
+            g_speed_user_locked = 1;  /* --speed выключает адаптацию */
         } else if (strcmp(argv[i], "--dump-memory") == 0 && i + 1 < argc) {
             dump_path = argv[++i];
         } else if (strcmp(argv[i], "--save-state") == 0 && i + 1 < argc) {
@@ -470,6 +487,13 @@ int main(int argc, char **argv)
         }
 
         if (run_cpu && !cpu.halted && !paused) {
+            /* Адаптивный темп: после первого хита R_06462 переключаемся
+             * на gameplay-speed (см. routines.c). */
+            if (!g_speed_user_locked && g_in_gameplay &&
+                g_steps_per_frame != g_speed_gameplay)
+            {
+                g_steps_per_frame = g_speed_gameplay;
+            }
             int n = pdp11_run_n(g_steps_per_frame);
             bk_tick_timer((unsigned)n);
             audio_flush();

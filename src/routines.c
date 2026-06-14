@@ -689,8 +689,13 @@ static void teleport_object(uint16_t cp_addr, uint16_t x_addr,
 
 /* 0x0d32 (= 0o6462). Телепорт врага E2 через тайл-«дверь» (тип 13).
  * Одна из 7 функций главного цикла; вызывается с 0x039a. */
+extern int g_in_gameplay;
 void R_06462_e2_teleport(void)
 {
+    /* Первый хит R_06462 = старт gameplay-цикла → переключить main.c
+     * на низкую скорость (главный loop иначе крутится в 35 раз
+     * быстрее реальной БК из-за C-замен). */
+    if (!g_in_gameplay) g_in_gameplay = 1;
     teleport_object(0014442u, 0014446u, 020u, 022u, 0017376u);
 }
 
