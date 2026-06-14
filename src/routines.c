@@ -1623,44 +1623,18 @@ void R_0888_int_to_dec(void)
  *
  * Финальная 7-я hot функция (8483/6 сек). Не имеет зависимостей.
  *
- * **Real-time throttle**: на оригинальной БК этот delay даёт
- * ~85 мкс задержки между тиками main loop. В C-замене 256-кратный
- * счётчик сворачивается до доли микросекунды → main loop крутится
- * в десятки раз быстрее реальной БК, что ускоряет игру и
- * **искажает частоту звуков**, генерируемых write-strobe'ом
- * EXT_DEV (утопление, выстрел и т.п. — там частота определяется
- * скоростью CPU-цикла). Поэтому здесь добавлен реальный sleep,
- * выравнивающий частоту main loop по 50 итераций в секунду
- * (= 20 мс между вызовами). CPU между нашими call'ами успевает
- * прокрутить много write-strobe'ов на полной скорости, что и
- * нужно для звука.
+ * Финальная 7-я hot функция (8483/6 сек). Не имеет зависимостей.
+ *
+ * ВАЖНО: C-замена R_02c6 НЕ эмулирует ~85 мкс задержки оригинала —
+ * 256 sob'ов сворачиваются до доли микросекунды. Это означает,
+ * что main loop крутится быстрее оригинала. Несколько попыток
+ * затормозить (nanosleep, soft_stop) ломали звук write-strobe'ов
+ * и/или давали рывки → откачены. Текущее состояние: игра идёт
+ * быстрее оригинала, но управление плавное, звук правильный.
+ * Регулировать темп можно через `--speed N` (по умолчанию 4000).
  * ------------------------------------------------------------------- */
-#include <time.h>
 void R_02c6_delay(void)
 {
-    /* === Real-time throttle: ждать до 20 мс с предыдущего call === */
-    static uint64_t s_last_call_ns = 0;
-    const uint64_t TARGET_PERIOD_NS = 20000000ULL; /* 20 ms = 50 Hz */
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    uint64_t now_ns = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-    if (s_last_call_ns != 0) {
-        uint64_t elapsed_ns = now_ns - s_last_call_ns;
-        if (elapsed_ns < TARGET_PERIOD_NS) {
-            struct timespec sleep_ts;
-            uint64_t remain = TARGET_PERIOD_NS - elapsed_ns;
-            sleep_ts.tv_sec  = (time_t)(remain / 1000000000ULL);
-            sleep_ts.tv_nsec = (long)(remain % 1000000000ULL);
-            nanosleep(&sleep_ts, NULL);
-            clock_gettime(CLOCK_MONOTONIC, &ts);
-            now_ns = (uint64_t)ts.tv_sec * 1000000000ULL +
-                     (uint64_t)ts.tv_nsec;
-        }
-    }
-    s_last_call_ns = now_ns;
-
-    /* === Оригинальная семантика для регистров/PSW === */
-
     /* mov r5, -(sp) */
     cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
     bk_write_w(cpu.r[6], cpu.r[5]);
