@@ -735,6 +735,49 @@ static inline void psw_nz_w(uint16_t v)
     if (v == 0)         cpu.psw |= PSW_Z;
 }
 
+/* Хелпер: PSW.N/Z/V по байту (movb/clrb/bicb стиль). */
+static inline void psw_nz_b(uint8_t v)
+{
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+    if ((int8_t)v < 0) cpu.psw |= PSW_N;
+    if (v == 0)        cpu.psw |= PSW_Z;
+}
+
+/* Хелпер: ADD word — r = src + dst_old, PSW по PDP-11 add. */
+static inline uint16_t psw_add_w(uint16_t src, uint16_t dst_old)
+{
+    uint16_t r = (uint16_t)(src + dst_old);
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V | PSW_C);
+    if ((int16_t)r < 0) cpu.psw |= PSW_N;
+    if (r == 0)         cpu.psw |= PSW_Z;
+    if ((uint16_t)(~(src ^ dst_old)) & (src ^ r) & 0x8000u) cpu.psw |= PSW_V;
+    if (r < src)        cpu.psw |= PSW_C;
+    return r;
+}
+
+/* Хелпер: ASL word — r = v << 1, PSW по PDP-11 asl. */
+static inline uint16_t psw_asl_w(uint16_t v)
+{
+    uint16_t r = (uint16_t)(v << 1);
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V | PSW_C);
+    if ((int16_t)r < 0) cpu.psw |= PSW_N;
+    if (r == 0)         cpu.psw |= PSW_Z;
+    if (v & 0x8000u)    cpu.psw |= PSW_C;
+    /* V = N XOR C. */
+    if (((cpu.psw & PSW_N) != 0) ^ ((cpu.psw & PSW_C) != 0)) cpu.psw |= PSW_V;
+    return r;
+}
+
+/* Хелпер: BIC word — r = dst_old & ~mask. PSW.NZV; C unchanged. */
+static inline uint16_t psw_bic_w(uint16_t mask, uint16_t dst_old)
+{
+    uint16_t r = (uint16_t)(dst_old & (uint16_t)~mask);
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+    if ((int16_t)r < 0) cpu.psw |= PSW_N;
+    if (r == 0)         cpu.psw |= PSW_Z;
+    return r;
+}
+
 /* Хелпер: PSW по результату cmp src - dst (word). */
 static inline void psw_cmp_w(uint16_t src, uint16_t dst)
 {
@@ -1478,6 +1521,133 @@ void R_0888_int_to_dec(void)
  * на каждый ход/действие игрока. Семантически «попытка совершена»,
  * не «получил жизнь».
  * ------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------
+ * R_09fe_draw_initial_map — рисователь стартовой карты уровня.
+ * (0x09fe..0x0a44, 70 байт, ~24 инструкции в двух вложенных циклах.)
+ *
+ * Оригинал — два вложенных цикла по 22×16 = 352 шага, на каждом
+ * шаге 2 вызова R_0a46_draw_8rows_v2 (= рисователь 8 строк × 1 word):
+ *   r4 = #5150               ; источник данных карты (byte[])
+ *   r1 = 0                   ; позиция X на экране (видеобуфер)
+ *   r5 = #26 = 22 dec        ; счётчик внешнего цикла (строк)
+ * outer:
+ *   push r1
+ *   r3 = #20 = 16 dec        ; счётчик внутреннего цикла
+ * inner:
+ *   r2 = byte (r4) & 0x0F     ; младший nibble
+ *   r2 = r2 << 4              ; индекс глифа × 16 (8×8 пикс = 16 байт)
+ *   r2 += #17450              ; адрес в шрифт-таблице (sprite-data)
+ *   jsr pc, R_0a46            ; нарисовать
+ *   r1 += 2                   ; следующая X-позиция (2 байта = 1 word)
+ *   r2 = byte (r4)+ & 0xF0    ; старший nibble (без сдвига — уже × 16)
+ *   r2 += #17450
+ *   jsr pc, R_0a46
+ *   r1 += 2
+ *   sob r3, inner
+ *   pop r1
+ *   r1 += #1000 = 512 dec     ; следующая строка экрана
+ *   sob r5, outer
+ *   rts pc
+ *
+ * За один вызов R_09fe экран заполняется картой уровня. Вызывается
+ * 1 раз в JSR-профиле gameplay (видимо в init-цепочке от R_1086).
+ * ------------------------------------------------------------------- */
+void R_09fe_draw_initial_map(void)
+{
+    /* mov #5150, r4 */
+    cpu.r[4] = 0005150u;
+    psw_nz_w(cpu.r[4]);
+
+    /* clr r1 — PSW.N=0, Z=1, V=0, C=0. */
+    cpu.r[1] = 0;
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_V | PSW_C);
+    cpu.psw |= PSW_Z;
+
+    /* mov #26, r5 */
+    cpu.r[5] = 0026u;
+    psw_nz_w(cpu.r[5]);
+
+    /* Внешний цикл — 22 раза (sob r5). */
+    for (;;) {
+        /* mov r1, -(sp) — push r1. PSW.NZ по r1. */
+        cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+        bk_write_w(cpu.r[6], cpu.r[1]);
+        psw_nz_w(cpu.r[1]);
+
+        /* mov #20, r3 */
+        cpu.r[3] = 0020u;
+        psw_nz_w(cpu.r[3]);
+
+        /* Внутренний цикл — 16 раз (sob r3). */
+        for (;;) {
+            /* movb (r4), r2 — байт без инкремента, sign-extend в word. */
+            {
+                uint8_t b = bk_read_b(cpu.r[4]);
+                cpu.r[2] = (uint16_t)(int16_t)(int8_t)b;
+                psw_nz_b(b);
+            }
+            /* bic #-20, r2 — -20 (oct) = 0xfff0; r2 &= 0x000f. */
+            cpu.r[2] = psw_bic_w(0xFFF0u, cpu.r[2]);
+            /* asl r2 × 4 — индекс глифа в нижнем nibble × 16. */
+            cpu.r[2] = psw_asl_w(cpu.r[2]);
+            cpu.r[2] = psw_asl_w(cpu.r[2]);
+            cpu.r[2] = psw_asl_w(cpu.r[2]);
+            cpu.r[2] = psw_asl_w(cpu.r[2]);
+            /* add #17450, r2 — адрес в таблице спрайтов. */
+            cpu.r[2] = psw_add_w(0017450u, cpu.r[2]);
+
+            /* jsr pc, R_0a46 — retaddr = 0x0a24. */
+            cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+            bk_write_w(cpu.r[6], 0x0a24);
+            R_0a46_draw_8rows_v2();
+
+            /* add #2, r1. */
+            cpu.r[1] = psw_add_w(0002u, cpu.r[1]);
+
+            /* movb (r4)+, r2 — байт С инкрементом. */
+            {
+                uint8_t b = bk_read_b(cpu.r[4]);
+                cpu.r[4] = (uint16_t)(cpu.r[4] + 1u);
+                cpu.r[2] = (uint16_t)(int16_t)(int8_t)b;
+                psw_nz_b(b);
+            }
+            /* bic #ff0f, r2 — ff0f (oct -361) = 0xff0f; r2 &= 0x00f0.
+             * Старший nibble уже × 16 — сдвиг не нужен. */
+            cpu.r[2] = psw_bic_w(0xFF0Fu, cpu.r[2]);
+            /* add #17450, r2. */
+            cpu.r[2] = psw_add_w(0017450u, cpu.r[2]);
+
+            /* jsr pc, R_0a46 — retaddr = 0x0a36. */
+            cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+            bk_write_w(cpu.r[6], 0x0a36);
+            R_0a46_draw_8rows_v2();
+
+            /* add #2, r1. */
+            cpu.r[1] = psw_add_w(0002u, cpu.r[1]);
+
+            /* sob r3, inner. PSW не меняется. */
+            cpu.r[3] = (uint16_t)(cpu.r[3] - 1u);
+            if (cpu.r[3] != 0) continue;
+            break;
+        }
+
+        /* mov (sp)+, r1 — pop r1. PSW.NZ по r1. */
+        cpu.r[1] = bk_read_w(cpu.r[6]);
+        cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+        psw_nz_w(cpu.r[1]);
+
+        /* add #1000, r1 — следующая строка экрана (1000 oct = 512 dec). */
+        cpu.r[1] = psw_add_w(0001000u, cpu.r[1]);
+
+        /* sob r5, outer. PSW не меняется. */
+        cpu.r[5] = (uint16_t)(cpu.r[5] - 1u);
+        if (cpu.r[5] != 0) continue;
+        break;
+    }
+
+    rts_pc();
+}
+
 /* ---------------------------------------------------------------------
  * R_0d24_reset_timers_redraw — init-процедура: сброс двух таймеров +
  * перерисовка героя. (0x0d24..0x0d30, 12 байт, 4 инструкции.)
@@ -2262,6 +2432,7 @@ static const struct {
     { 0005106u, R_0a46_draw_8rows_v2 },   /* 0x0a46 */
     { 0006054u, R_0c2c_draw_hero },       /* 0x0c2c */
     { 0006444u, R_0d24_reset_timers_redraw }, /* 0x0d24 */
+    { 0004776u, R_09fe_draw_initial_map },     /* 0x09fe */
     { 0007432u, R_0f1a_anim_timer3 },     /* 0x0f1a */
     { 0012442u, R_1522_draw_map },        /* 0x1522 */
     { 0012530u, R_1558_draw_8rows },      /* 0x1558 */
