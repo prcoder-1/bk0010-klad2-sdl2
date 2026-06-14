@@ -30,7 +30,7 @@ BIN       := klad2
 # Объекты для тест-бинарника — только не-SDL2-модули.
 TEST_DEPS := $(BUILD)/bk.o $(BUILD)/pdp11.o $(BUILD)/audio.o $(BUILD)/routines.o $(BUILD)/emt.o $(BUILD)/klad2_font.o $(BUILD)/klad2_mon_rom.o $(BUILD)/klad2_initial.o
 
-.PHONY: all run test clean screenshots
+.PHONY: all run test clean screenshots verify
 
 all: $(BIN)
 
@@ -58,6 +58,17 @@ test: $(patsubst $(BUILD)/%.o,$(BUILD)/%,$(TEST_OBJS))
 
 clean:
 	rm -rf $(BUILD) $(BIN)
+
+# Полная AB-верификация всех C-замен на gameplay уровня 1.
+# См. docs/verification.md для интерпретации результата.
+verify: $(BIN)
+	@echo "=== AB всех C-замен на gameplay уровня 1 (12 сек) ==="
+	@KLAD2_AB=all KLAD2_AB_REGS=1 timeout -s INT 15 ./$(BIN) KLAD2.BIN \
+	    --auto-keys "60:Enter,180:1" --speed 30000 2>&1 | \
+	    awk '/AB-MEM/{m++} /AB-REGS/{r++} /AB-PSW/{p++} \
+	         /AB:.*вызов/{print; total=$$2} \
+	         END{printf "Расхождений: память=%d, регистры=%d, PSW=%d\n", \
+	             m+0, r+0, p+0}'
 
 # Воспроизвести три референсных скриншота через --auto-keys + дамп +
 # конвертер. Полезно для регрессионной проверки после изменений.
