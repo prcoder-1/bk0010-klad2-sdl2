@@ -28,6 +28,72 @@ static emt_handler_fn g_emt_handler;
 static emt_handler_fn g_trap_handler;
 static int            g_trace;
 
+/* =================== Профайлер JSR-целей ============================
+ * При активном env-флаге KLAD2_JSR_PROFILE=<path>: на каждом JSR
+ * увеличиваем счётчик по адресу цели. При выходе (atexit) дампим
+ * топ-50 в путь, отсортированный по убыванию счётчика. Помогает в
+ * Фазе 6 находить часто-вызываемые процедуры, ещё не получившие
+ * C-замену.
+ *
+ * 64K × uint32 = 256 КиБ — копейки, выделяем статически. */
+static uint32_t g_jsr_counts[65536];
+static int      g_jsr_profile_enabled = -1; /* -1 = не инициализирован */
+static char     g_jsr_profile_path[256];
+
+static void jsr_profile_dump(void)
+{
+    if (g_jsr_profile_enabled <= 0) return;
+    FILE *f = fopen(g_jsr_profile_path, "w");
+    if (!f) return;
+
+    /* Топ-50 по убыванию. Простая сортировка отбором (массив 64K, но
+     * нас интересуют только ненулевые). */
+    typedef struct { uint16_t pc; uint32_t n; } entry_t;
+    entry_t top[50];
+    int top_n = 0;
+    for (int pc = 0; pc < 65536; pc++) {
+        uint32_t n = g_jsr_counts[pc];
+        if (n == 0) continue;
+        /* Вставляем по убыванию. */
+        if (top_n < 50) {
+            top[top_n].pc = (uint16_t)pc;
+            top[top_n].n  = n;
+            top_n++;
+        } else if (n > top[49].n) {
+            top[49].pc = (uint16_t)pc;
+            top[49].n  = n;
+        } else continue;
+        /* Bubble up. */
+        for (int i = top_n - 1; i > 0 && top[i].n > top[i-1].n; i--) {
+            entry_t t = top[i]; top[i] = top[i-1]; top[i-1] = t;
+        }
+    }
+    /* Также — общее число уникальных целей. */
+    int uniq = 0;
+    uint64_t total = 0;
+    for (int pc = 0; pc < 65536; pc++)
+        if (g_jsr_counts[pc]) { uniq++; total += g_jsr_counts[pc]; }
+    fprintf(f, "# JSR profile: уникальных целей %d, всего вызовов %llu\n",
+            uniq, (unsigned long long)total);
+    fprintf(f, "# PC(oct) PC(hex) count\n");
+    for (int i = 0; i < top_n; i++) {
+        fprintf(f, "%06o  0x%04x  %u\n",
+                top[i].pc, top[i].pc, top[i].n);
+    }
+    fclose(f);
+    fprintf(stderr, "JSR profile сохранён в %s (%d уникальных, %llu вызовов)\n",
+            g_jsr_profile_path, uniq, (unsigned long long)total);
+}
+
+static void jsr_profile_init(void)
+{
+    const char *p = getenv("KLAD2_JSR_PROFILE");
+    if (!p || !*p) { g_jsr_profile_enabled = 0; return; }
+    snprintf(g_jsr_profile_path, sizeof g_jsr_profile_path, "%s", p);
+    g_jsr_profile_enabled = 1;
+    atexit(jsr_profile_dump);
+}
+
 /* =================== A/B-сравнение C-замен ============================
  * При активном env-флаге KLAD2_AB=<address|all>: на каждом входе в
  * указанный адрес делаем snapshot всей памяти+регистров, запускаем
@@ -926,6 +992,10 @@ static void exec_jsr(uint16_t op)
     bk_write_w(cpu.r[6], cpu.r[reg]);
     cpu.r[reg] = cpu.r[7];
     cpu.r[7]   = (uint16_t)sdst;
+
+    /* JSR-профайлер: ленивая инициализация по env-флагу. */
+    if (g_jsr_profile_enabled < 0) jsr_profile_init();
+    if (g_jsr_profile_enabled) g_jsr_counts[sdst & 0xFFFFu]++;
 }
 
 static void exec_rts(uint16_t op)
