@@ -128,7 +128,8 @@ int g_steps_per_frame      = 4000;  /* текущее значение */
 int g_speed_startup        = 4000;
 int g_speed_gameplay       = 65;
 int g_speed_user_locked    = 0;     /* 1 если --speed задан явно */
-int g_in_gameplay          = 0;     /* устанавливается из R_06462 */
+/* g_in_gameplay живёт в routines.c (доступен и тест-бинарнику). */
+extern int g_in_gameplay;
 
 static SDL_Window   *g_window;
 static SDL_Renderer *g_renderer;
