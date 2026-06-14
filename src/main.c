@@ -124,12 +124,13 @@ static void inject_key(SDL_Keycode k, int down)
  * адаптацию.
  *
  * Не static — нужен из audio.c для подбора частоты сэмплинга. */
-int g_steps_per_frame      = 4000;  /* текущее значение */
-int g_speed_startup        = 4000;
-int g_speed_gameplay       = 150;
-int g_speed_user_locked    = 0;     /* 1 если --speed задан явно */
-/* g_in_gameplay живёт в routines.c (доступен и тест-бинарнику). */
-extern int g_in_gameplay;
+int g_steps_per_frame      = 4000;  /* единая скорость CPU */
+/* Адаптивный темп переключения скорости УБРАН: он сломал звук
+ * утопления и подобные write-strobe эффекты, которые генерируются
+ * интерпретатором в реальном времени. Теперь CPU всегда крутится
+ * с одной скоростью, а main loop тормозится через real-time sleep
+ * в C-замене R_02c6_delay (см. routines.c). Это даёт и нормальный
+ * темп игры (50 iter/сек), и правильную частоту звуковых эффектов. */
 
 static SDL_Window   *g_window;
 static SDL_Renderer *g_renderer;
@@ -305,8 +306,7 @@ int main(int argc, char **argv)
             rom_path = argv[++i];
         } else if (strcmp(argv[i], "--speed") == 0 && i + 1 < argc) {
             g_steps_per_frame = (int)strtol(argv[++i], NULL, 0);
-            if (g_steps_per_frame < 10) g_steps_per_frame = 10;
-            g_speed_user_locked = 1;  /* --speed выключает адаптацию */
+            if (g_steps_per_frame < 100) g_steps_per_frame = 100;
         } else if (strcmp(argv[i], "--dump-memory") == 0 && i + 1 < argc) {
             dump_path = argv[++i];
         } else if (strcmp(argv[i], "--save-state") == 0 && i + 1 < argc) {
@@ -488,13 +488,6 @@ int main(int argc, char **argv)
         }
 
         if (run_cpu && !cpu.halted && !paused) {
-            /* Адаптивный темп: после первого хита R_06462 переключаемся
-             * на gameplay-speed (см. routines.c). */
-            if (!g_speed_user_locked && g_in_gameplay &&
-                g_steps_per_frame != g_speed_gameplay)
-            {
-                g_steps_per_frame = g_speed_gameplay;
-            }
             int n = pdp11_run_n(g_steps_per_frame);
             bk_tick_timer((unsigned)n);
             audio_flush();
