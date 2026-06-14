@@ -1592,6 +1592,72 @@ void R_0888_int_to_dec(void)
  * не «получил жизнь».
  * ------------------------------------------------------------------- */
 /* ---------------------------------------------------------------------
+ * R_0efe_double_timer — таймер с порогом 4 + двумя hot-helper'ами.
+ * (0x0efe..0x0f18, 28 байт, 8 инструкций.)
+ *
+ * Оригинал:
+ *   cmp #4, @#17372
+ *   bge inc                 ; если 4 >= cell → inc + rts
+ *   jsr pc, @#R_15e0         ; иначе main path
+ *   jsr pc, @#R_1414
+ *   clr @#17372
+ *   br rts
+ * inc:
+ *   inc @#17372
+ * rts:
+ *   rts pc
+ *
+ * Один из 7 hot-функций main loop'а (23549 вызовов/12 сек). Раньше
+ * был заблокирован — R_15e0 и R_1414 ещё не декомпилированы. С
+ * предыдущими двумя коммитами оба готовы.
+ *
+ * R_15e0 может НЕ вернуться через rts (уходит в jmp на 0x0bd4
+ * death-handler или 0x0bc8 продолжение). После вызова проверяем
+ * cpu.r[7] — если не наш retaddr, не делаем rts и не вызываем R_1414.
+ * ------------------------------------------------------------------- */
+void R_0efe_double_timer(void)
+{
+    /* cmp #4, @#17372 */
+    uint16_t cell = bk_read_w(017372u);
+    psw_cmp_w(4u, cell);
+
+    /* bge inc — branch if N == V (signed >=). */
+    int bge = (((cpu.psw & PSW_N) != 0) == ((cpu.psw & PSW_V) != 0));
+
+    if (bge) {
+        /* inc @#17372 */
+        uint16_t nxt = (uint16_t)(cell + 1u);
+        bk_write_w(017372u, nxt);
+        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+        if ((int16_t)nxt < 0) cpu.psw |= PSW_N;
+        if (nxt == 0)         cpu.psw |= PSW_Z;
+        if (cell == 0x7FFFu)  cpu.psw |= PSW_V;
+        rts_pc();
+        return;
+    }
+
+    /* jsr pc, R_15e0 — retaddr 0x0f0a. */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], 0x0f0a);
+    R_15e0_anim_tick();
+    /* R_15e0 может уйти в jmp 0x0bd4 / 0x0bc8 — тогда cpu.r[7] != retaddr,
+     * мы продолжать НЕ должны. Просто выходим без rts. */
+    if (cpu.r[7] != 0x0f0a) return;
+
+    /* jsr pc, R_1414 — retaddr 0x0f0e. */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], 0x0f0e);
+    R_1414_queue_handler();
+    if (cpu.r[7] != 0x0f0e) return;
+
+    /* clr @#17372 */
+    bk_write_w(017372u, 0);
+    psw_clr_set();
+
+    rts_pc();
+}
+
+/* ---------------------------------------------------------------------
  * R_15e0_anim_tick — анимация-тикер объекта (передняя часть R_15e0,
  * 0x15e0..0x168a). Полная процедура простирается до 0x1752 с
  * несколькими RTS/jmp на 0x14be/0x0bc8, но в моей C-замене мы покры-
@@ -3244,6 +3310,7 @@ static const struct {
     { 0013524u, R_1754_postprocess_map },      /* 0x1754 */
     { 0010206u, R_1086_load_level },           /* 0x1086 */
     { 0012740u, R_15e0_anim_tick },            /* 0x15e0 — частичная замена */
+    { 0007376u, R_0efe_double_timer },         /* 0x0efe */
     { 0007432u, R_0f1a_anim_timer3 },     /* 0x0f1a */
     { 0012442u, R_1522_draw_map },        /* 0x1522 */
     { 0012530u, R_1558_draw_8rows },      /* 0x1558 */

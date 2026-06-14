@@ -70,5 +70,6 @@ void R_1414_queue_handler(void);
 void R_1754_postprocess_map(void);
 void R_1086_load_level(void);
 void R_15e0_anim_tick(void);
+void R_0efe_double_timer(void);
 
 #endif /* KLAD2_ROUTINES_H */
