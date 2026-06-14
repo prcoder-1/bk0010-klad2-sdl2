@@ -1573,6 +1573,158 @@ void R_0888_int_to_dec(void)
  * не «получил жизнь».
  * ------------------------------------------------------------------- */
 /* ---------------------------------------------------------------------
+ * R_1086_load_level — загрузка нового уровня в game state.
+ * (0x1086..0x1102, 124 байт, 30 инструкций.)
+ *
+ * Структура game state @ 0o17420 (= GAME_STATE base):
+ *   +0..7 (4 word): header текущего уровня (копируется из таблицы)
+ *   +8..9 (1 word): указатель на текущий уровень в таблице уровней
+ *   ...
+ *
+ * Логика:
+ *   1. Если r0 == 0 — продвинуться на следующий уровень
+ *      (mem[GAME_STATE+10] += 0o24 = 20 байт на запись уровня).
+ *   2. Скопировать 4 слова header'а в [GAME_STATE..GAME_STATE+7].
+ *   3. Скопировать 6 слов "spawn data" из [уровень+8] в массив
+ *      героев [0o14422, 0o14426, 0o14432, 0o14436, 0o14442, 0o14446]
+ *      (шаг 4 байта между записями).
+ *   4. r4 = mem[GAME_STATE+2] (карта уровня в byte-формате).
+ *   5. jsr R_1754 — постпроцессор карты (распаковка + анализ).
+ *   6. jsr R_1522 — рисователь карты.
+ *   7. Обнулить три ячейки координат: 0o14420, 0o14430, 0o14440 = 0.
+ *   8. Установить три ячейки таймеров: 0o14424, 0o14434, 0o14444 = 0o24.
+ *   9. jsr R_0d24 — сброс таймеров + перерисовка героя.
+ *  10. Очистить очередь эффектов [0o11224..0o12024] = 0, head = 0o11224.
+ *
+ * Зависимости: R_1754 (C ✅), R_1522 (C ✅), R_0d24 (C ✅).
+ * Вызывается 1 раз при старте уровня.
+ * ------------------------------------------------------------------- */
+void R_1086_load_level(void)
+{
+    /* mov #17420, r4 */
+    cpu.r[4] = 017420u;
+    psw_nz_w(cpu.r[4]);
+
+    /* mov 10(r4), r2 — r2 = mem[r4+8oct=8dec]. */
+    cpu.r[2] = bk_read_w((uint16_t)(cpu.r[4] + 0010u));
+    psw_nz_w(cpu.r[2]);
+
+    /* tst r0 */
+    psw_nz_w(cpu.r[0]);
+    if (cpu.r[0] == 0) {
+        /* add #24, 10(r4) — продвижение к следующему уровню. */
+        uint16_t addr = (uint16_t)(cpu.r[4] + 0010u);
+        bk_write_w(addr, psw_add_w(0024u, bk_read_w(addr)));
+        /* mov 10(r4), r2 */
+        cpu.r[2] = bk_read_w((uint16_t)(cpu.r[4] + 0010u));
+        psw_nz_w(cpu.r[2]);
+    }
+
+    /* mov #4, r5; sob loop: mov (r2)+, (r4)+ × 4. */
+    cpu.r[5] = 4;
+    psw_nz_w(4);
+    for (;;) {
+        uint16_t v = bk_read_w(cpu.r[2]);
+        cpu.r[2] = (uint16_t)(cpu.r[2] + 2u);
+        bk_write_w(cpu.r[4], v);
+        cpu.r[4] = (uint16_t)(cpu.r[4] + 2u);
+        psw_nz_w(v);
+        cpu.r[5] = (uint16_t)(cpu.r[5] - 1u);
+        if (cpu.r[5] == 0) break;
+    }
+
+    /* mov #17420, r4; mov 10(r4), r2 */
+    cpu.r[4] = 017420u;
+    psw_nz_w(cpu.r[4]);
+    cpu.r[2] = bk_read_w((uint16_t)(cpu.r[4] + 0010u));
+    psw_nz_w(cpu.r[2]);
+
+    /* add #10, r2 — skip header (4 word'а). */
+    cpu.r[2] = psw_add_w(0010u, cpu.r[2]);
+
+    /* mov #14422, r5; mov #6, r1. */
+    cpu.r[5] = 014422u;
+    psw_nz_w(cpu.r[5]);
+    cpu.r[1] = 6;
+    psw_nz_w(6);
+
+    /* sob loop: mov (r2)+, (r5); r5 += 4; sob r1. */
+    for (;;) {
+        uint16_t v = bk_read_w(cpu.r[2]);
+        cpu.r[2] = (uint16_t)(cpu.r[2] + 2u);
+        bk_write_w(cpu.r[5], v);
+        psw_nz_w(v);
+        /* add #4, r5. */
+        cpu.r[5] = psw_add_w(0004u, cpu.r[5]);
+        cpu.r[1] = (uint16_t)(cpu.r[1] - 1u);
+        if (cpu.r[1] == 0) break;
+    }
+
+    /* mov 2(r4), r4 — r4 = mem[GAME_STATE+2] (карта уровня). */
+    cpu.r[4] = bk_read_w((uint16_t)(cpu.r[4] + 2u));
+    psw_nz_w(cpu.r[4]);
+
+    /* jsr pc, R_1754 — retaddr 0x10c8. */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], 0x10c8);
+    R_1754_postprocess_map();
+
+    /* jsr pc, R_1522 — retaddr 0x10cc. */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], 0x10cc);
+    R_1522_draw_map();
+
+    /* mov #0, r4. */
+    cpu.r[4] = 0;
+    psw_nz_w(0);
+    /* mov r4, @#14420; @#14430; @#14440. */
+    bk_write_w(014420u, cpu.r[4]);
+    psw_nz_w(cpu.r[4]);
+    bk_write_w(014430u, cpu.r[4]);
+    psw_nz_w(cpu.r[4]);
+    bk_write_w(014440u, cpu.r[4]);
+    psw_nz_w(cpu.r[4]);
+
+    /* mov #24, r4. */
+    cpu.r[4] = 0024u;
+    psw_nz_w(cpu.r[4]);
+    bk_write_w(014424u, cpu.r[4]);
+    psw_nz_w(cpu.r[4]);
+    bk_write_w(014434u, cpu.r[4]);
+    psw_nz_w(cpu.r[4]);
+    bk_write_w(014444u, cpu.r[4]);
+    psw_nz_w(cpu.r[4]);
+
+    /* jsr pc, R_0d24 — retaddr 0x10f0. */
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+    bk_write_w(cpu.r[6], 0x10f0);
+    R_0d24_reset_timers_redraw();
+
+    /* mov #11224, r5; clr (r5)+ loop пока r5 < 12024. */
+    cpu.r[5] = 011224u;
+    psw_nz_w(cpu.r[5]);
+
+    for (;;) {
+        /* clr (r5)+ — PSW: N=0, Z=1, V=0, C=0. */
+        bk_write_w(cpu.r[5], 0);
+        psw_clr_set();
+        cpu.r[5] = (uint16_t)(cpu.r[5] + 2u);
+        /* cmp #12024, r5; bgt 0x10f4 — branch if signed >. */
+        psw_cmp_w(012024u, cpu.r[5]);
+        int bgt = (((cpu.psw & PSW_Z) == 0) &&
+                   (((cpu.psw & PSW_N) != 0) == ((cpu.psw & PSW_V) != 0)));
+        if (bgt) continue;
+        break;
+    }
+
+    /* mov #11224, @#17400 — init head. */
+    bk_write_w(017400u, 011224u);
+    psw_nz_w(011224u);
+
+    rts_pc();
+}
+
+/* ---------------------------------------------------------------------
  * R_1754_postprocess_map — постпроцессор карты уровня после загрузки.
  * (0x1754..0x1816, 194 байт, ~50 инструкций. Включая встроенный
  * side-handler на 0x02aa.)
@@ -2860,6 +3012,7 @@ static const struct {
     { 0004776u, R_09fe_draw_initial_map },     /* 0x09fe */
     { 0012024u, R_1414_queue_handler },        /* 0x1414 */
     { 0013524u, R_1754_postprocess_map },      /* 0x1754 */
+    { 0010206u, R_1086_load_level },           /* 0x1086 */
     { 0007432u, R_0f1a_anim_timer3 },     /* 0x0f1a */
     { 0012442u, R_1522_draw_map },        /* 0x1522 */
     { 0012530u, R_1558_draw_8rows },      /* 0x1558 */

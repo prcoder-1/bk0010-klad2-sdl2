@@ -68,5 +68,6 @@ void R_0d24_reset_timers_redraw(void);
 void R_09fe_draw_initial_map(void);
 void R_1414_queue_handler(void);
 void R_1754_postprocess_map(void);
+void R_1086_load_level(void);
 
 #endif /* KLAD2_ROUTINES_H */
