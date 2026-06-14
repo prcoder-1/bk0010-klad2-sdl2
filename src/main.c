@@ -38,6 +38,72 @@ enum {
  * отрисовки. */
 static int g_scale = 3;
 
+/* Скриптовый ввод — для автоматизации профилирования gameplay
+ * (KLAD2_JSR_PROFILE, --save-state) без интерактивного нажатия.
+ * Формат флага --auto-keys: "FRAME:KEY[,FRAME:KEY,...]" где KEY —
+ * одно из имён: Enter, Space, Left, Right, Up, Down, RShift, LShift,
+ * Esc, либо одиночный ASCII-символ. На указанном кадре генерируется
+ * SDL_KEYDOWN, через AUTO_HOLD_FRAMES кадров — SDL_KEYUP. */
+enum { AUTO_KEYS_MAX = 64, AUTO_HOLD_FRAMES = 3 };
+struct auto_key { int frame; SDL_Keycode key; };
+static struct auto_key g_auto_keys[AUTO_KEYS_MAX];
+static int g_auto_keys_n;
+
+static SDL_Keycode parse_key_name(const char *name)
+{
+    if (strcasecmp(name, "Enter") == 0)  return SDLK_RETURN;
+    if (strcasecmp(name, "Space") == 0)  return SDLK_SPACE;
+    if (strcasecmp(name, "Esc") == 0)    return SDLK_ESCAPE;
+    if (strcasecmp(name, "Left") == 0)   return SDLK_LEFT;
+    if (strcasecmp(name, "Right") == 0)  return SDLK_RIGHT;
+    if (strcasecmp(name, "Up") == 0)     return SDLK_UP;
+    if (strcasecmp(name, "Down") == 0)   return SDLK_DOWN;
+    if (strcasecmp(name, "LShift") == 0) return SDLK_LSHIFT;
+    if (strcasecmp(name, "RShift") == 0) return SDLK_RSHIFT;
+    if (strlen(name) == 1) return (SDL_Keycode)name[0];
+    return 0;
+}
+
+static int parse_auto_keys(const char *spec)
+{
+    g_auto_keys_n = 0;
+    char buf[512]; snprintf(buf, sizeof buf, "%s", spec);
+    char *save = NULL;
+    for (char *tok = strtok_r(buf, ",", &save); tok;
+         tok = strtok_r(NULL, ",", &save))
+    {
+        char *colon = strchr(tok, ':');
+        if (!colon || g_auto_keys_n >= AUTO_KEYS_MAX) {
+            fprintf(stderr, "--auto-keys: плохой токен '%s'\n", tok);
+            return -1;
+        }
+        *colon = 0;
+        int frame = (int)strtol(tok, NULL, 0);
+        SDL_Keycode k = parse_key_name(colon + 1);
+        if (!k) {
+            fprintf(stderr, "--auto-keys: неизвестная клавиша '%s'\n",
+                    colon + 1);
+            return -1;
+        }
+        g_auto_keys[g_auto_keys_n].frame = frame;
+        g_auto_keys[g_auto_keys_n].key   = k;
+        g_auto_keys_n++;
+    }
+    return 0;
+}
+
+/* Создать SDL-событие нажатия/отпускания и пропустить через input. */
+static void inject_key(SDL_Keycode k, int down)
+{
+    SDL_Event e;
+    memset(&e, 0, sizeof e);
+    e.type = down ? SDL_KEYDOWN : SDL_KEYUP;
+    e.key.type = e.type;
+    e.key.state = down ? SDL_PRESSED : SDL_RELEASED;
+    e.key.keysym.sym = k;
+    input_handle_sdl_event(&e);
+}
+
 /* Сколько инструкций крутим между кадрами SDL2 (60 fps под VSYNC).
  * По-хорошему БК-0010 на 3 МГц даёт ≈ 600 тыс. инструкций/с,
  * т.е. ~10 тыс. на кадр при 60 fps. Но КЛАД-2 использует busy-loop
@@ -245,6 +311,8 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--fast-start") == 0 && i + 1 < argc) {
             /* Мгновенный старт: загрузить snapshot, минуя релокатор. */
             snap_load_path = argv[++i];
+        } else if (strcmp(argv[i], "--auto-keys") == 0 && i + 1 < argc) {
+            if (parse_auto_keys(argv[++i]) != 0) return EXIT_FAILURE;
         } else if (strcmp(argv[i], "--scale") == 0 && i + 1 < argc) {
             int s = (int)strtol(argv[++i], NULL, 0);
             if (s < 1 || s > 4) {
@@ -356,7 +424,21 @@ int main(int argc, char **argv)
     int running = 1;
     int paused = 0;
     int fullscreen = 0;
+    int frame_no = 0;
     while (running) {
+        /* Скриптовый ввод: на нужных кадрах инъецируем KEYDOWN, через
+         * AUTO_HOLD_FRAMES — KEYUP. Сравниваем frame_no точно — каждый
+         * запланированный шаг сработает ровно один раз. */
+        for (int i = 0; i < g_auto_keys_n; i++) {
+            if (g_auto_keys[i].frame == frame_no) {
+                inject_key(g_auto_keys[i].key, 1);
+                fprintf(stderr, "[auto-keys] кадр %d: down %s\n",
+                        frame_no, SDL_GetKeyName(g_auto_keys[i].key));
+            } else if (g_auto_keys[i].frame + AUTO_HOLD_FRAMES == frame_no) {
+                inject_key(g_auto_keys[i].key, 0);
+            }
+        }
+        frame_no++;
         while (SDL_PollEvent(&ev)) {
             switch (ev.type) {
             case SDL_QUIT:
