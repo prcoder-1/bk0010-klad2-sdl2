@@ -72,5 +72,6 @@ void R_1086_load_level(void);
 void R_15e0_anim_tick(void);
 void R_0efe_double_timer(void);
 void R_1578_special_tile(void);
+void R_02c6_delay(void);
 
 #endif /* KLAD2_ROUTINES_H */
