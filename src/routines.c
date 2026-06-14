@@ -778,6 +778,45 @@ static inline uint16_t psw_bic_w(uint16_t mask, uint16_t dst_old)
     return r;
 }
 
+/* Хелпер: BIS word — r = dst_old | src. PSW.NZV; C unchanged. */
+static inline uint16_t psw_bis_w(uint16_t src, uint16_t dst_old)
+{
+    uint16_t r = (uint16_t)(dst_old | src);
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+    if ((int16_t)r < 0) cpu.psw |= PSW_N;
+    if (r == 0)         cpu.psw |= PSW_Z;
+    return r;
+}
+
+/* Хелпер: CMP byte — PSW от src - dst, без записи. */
+static inline void psw_cmp_b(uint8_t src, uint8_t dst)
+{
+    uint8_t res = (uint8_t)(src - dst);
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V | PSW_C);
+    if ((int8_t)res < 0) cpu.psw |= PSW_N;
+    if (res == 0)        cpu.psw |= PSW_Z;
+    if ((src ^ dst) & (src ^ res) & 0x80u) cpu.psw |= PSW_V;
+    if (src < dst)       cpu.psw |= PSW_C;
+}
+
+/* Хелпер: DEC byte — r = v - 1. PSW.NZV; C unchanged. */
+static inline uint8_t psw_dec_b(uint8_t v)
+{
+    uint8_t r = (uint8_t)(v - 1u);
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
+    if ((int8_t)r < 0) cpu.psw |= PSW_N;
+    if (r == 0)        cpu.psw |= PSW_Z;
+    if (v == 0x80u)    cpu.psw |= PSW_V;  /* 0x80 -1 → 0x7F: overflow */
+    return r;
+}
+
+/* Хелпер: CLR byte — r = 0. PSW: N=0, Z=1, V=0, C=0. */
+static inline void psw_clr_set(void)
+{
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_V | PSW_C);
+    cpu.psw |= PSW_Z;
+}
+
 /* Хелпер: PSW по результату cmp src - dst (word). */
 static inline void psw_cmp_w(uint16_t src, uint16_t dst)
 {
@@ -1521,6 +1560,187 @@ void R_0888_int_to_dec(void)
  * на каждый ход/действие игрока. Семантически «попытка совершена»,
  * не «получил жизнь».
  * ------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------
+ * R_1414_queue_handler — обработчик очереди отложенных эффектов карты.
+ * (0x1414..0x14bc, 168 байт, ~50 инструкций.)
+ *
+ * Кольцевой буфер на 64 записи × 6 байт (0o11224..0o12024):
+ *   +0 word: char_pointer (адрес ячейки карты)
+ *   +2 word: screen_pointer (адрес в видеобуфере)
+ *   +4 byte: счётчик-таймер (декремент каждый вызов)
+ *   +5 byte: текущий тип эффекта
+ * head = @#17400 (всегда указывает на «текущую» запись).
+ *
+ * Логика:
+ *   1. Если caller передал r1 != 0 — добавить новую запись:
+ *      head += 6 (с wraparound в 0o11224 после 0o12016).
+ *      mem[head+0]=r2; mem[head+2]=r1; mem[head+4]=0o150; mem[head+5]=0.
+ *   2. Проход по всем 64 записям:
+ *      - пустая (word == 0) → skip
+ *      - таймер == 0 → expired: ищем тип в таблице 0o17402..0o17405,
+ *        если найден — заменить тип через parallel-таблицу 0o17406..0o17411,
+ *        записать в карту, перерисовать через R_14302, сбросить таймер.
+ *        При новом типе == #14 — спецсброс битов в ±строка/±2 байт.
+ *        Если не найден — HALT (неизвестный тип).
+ *      - иначе таймер--
+ *
+ * Вызывается ~3925 раз/12 сек gameplay (профайлер). Helper для R_0efe
+ * (двойной таймер), который сам ~23549/12 сек.
+ * ------------------------------------------------------------------- */
+void R_1414_queue_handler(void)
+{
+    /* === Часть 1: добавление новой записи если r1 != 0. === */
+
+    /* tst r1 */
+    psw_nz_w(cpu.r[1]);
+    if (cpu.r[1] != 0) {
+        /* cmp #12016, @#17400 */
+        uint16_t head = bk_read_w(017400u);
+        psw_cmp_w(012016u, head);
+        if (head == 012016u) {
+            /* mov #11224, @#17400 — wraparound */
+            bk_write_w(017400u, 011224u);
+            psw_nz_w(011224u);
+        } else {
+            /* add #6, @#17400 */
+            bk_write_w(017400u, psw_add_w(0006u, head));
+        }
+        /* mov @#17400, r5 */
+        cpu.r[5] = bk_read_w(017400u);
+        psw_nz_w(cpu.r[5]);
+        /* mov r2, (r5) */
+        bk_write_w(cpu.r[5], cpu.r[2]);
+        psw_nz_w(cpu.r[2]);
+        /* mov r1, 2(r5) */
+        bk_write_w((uint16_t)(cpu.r[5] + 2u), cpu.r[1]);
+        psw_nz_w(cpu.r[1]);
+        /* clrb 5(r5) */
+        bk_write_b((uint16_t)(cpu.r[5] + 5u), 0);
+        psw_clr_set();
+        /* movb #150, 4(r5) — PSW по байту #150 (= 0x68 → N=0, Z=0). */
+        bk_write_b((uint16_t)(cpu.r[5] + 4u), 0150u);
+        psw_nz_b(0150u);
+    }
+
+    /* === Часть 2: проход по очереди. === */
+
+    /* mov #11224, r5 */
+    cpu.r[5] = 011224u;
+    psw_nz_w(011224u);
+
+    for (;;) {
+        /* tst (r5) */
+        uint16_t cell = bk_read_w(cpu.r[5]);
+        psw_nz_w(cell);
+
+        if (cell != 0) {
+            /* tstb 4(r5) */
+            uint8_t tmr = bk_read_b((uint16_t)(cpu.r[5] + 4u));
+            psw_nz_b(tmr);
+
+            if (tmr != 0) {
+                /* decb 4(r5) */
+                bk_write_b((uint16_t)(cpu.r[5] + 4u), psw_dec_b(tmr));
+            } else {
+                /* === expired path: 0x1460 === */
+                cpu.r[2] = bk_read_w(cpu.r[5]);
+                psw_nz_w(cpu.r[2]);
+                cpu.r[1] = bk_read_w((uint16_t)(cpu.r[5] + 2u));
+                psw_nz_w(cpu.r[1]);
+                cpu.r[4] = 4;
+                psw_nz_w(4);
+                cpu.r[3] = 017402u;
+                psw_nz_w(017402u);
+
+                /* Поиск типа в массиве 0o17402..0o17405. */
+                uint8_t type_byte = bk_read_b((uint16_t)(cpu.r[5] + 5u));
+                int found = 0;
+                for (;;) {
+                    uint8_t t = bk_read_b(cpu.r[3]);
+                    cpu.r[3] = (uint16_t)(cpu.r[3] + 1u);
+                    psw_cmp_b(t, type_byte);
+                    if (t == type_byte) { found = 1; break; }
+                    /* sob r4, 0x146e — PSW не меняет. */
+                    cpu.r[4] = (uint16_t)(cpu.r[4] - 1u);
+                    if (cpu.r[4] == 0) break;
+                }
+                if (!found) {
+                    /* halt — неизвестный тип. */
+                    fprintf(stderr,
+                            "R_1414: неизвестный тип 0o%03o в очереди "
+                            "(r2=%06o, типы @17402..%06o)\n",
+                            type_byte, cpu.r[2], 017405u);
+                    cpu.halted = 1;
+                    return;
+                }
+
+                /* br 0x14b2 → подпроцедура замены типа: */
+                /* movb 3(r3), 5(r5) — parallel-байт через +3 от позиции
+                 * сразу за найденным (r3 уже инкрементирован после cmpb). */
+                {
+                    uint8_t new_type = bk_read_b((uint16_t)(cpu.r[3] + 3u));
+                    bk_write_b((uint16_t)(cpu.r[5] + 5u), new_type);
+                    psw_nz_b(new_type);
+                    /* movb 5(r5), (r2) — записать новый тип в карту. */
+                    bk_write_b(cpu.r[2], new_type);
+                    psw_nz_b(new_type);
+                }
+
+                /* 0x147e: movb #150, 4(r5) — сброс таймера. */
+                bk_write_b((uint16_t)(cpu.r[5] + 4u), 0150u);
+                psw_nz_b(0150u);
+
+                /* jsr pc, R_14302 — перерисовка. retaddr = 0x1488. */
+                cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
+                bk_write_w(cpu.r[6], 0x1488);
+                R_14302_draw_glyph_8x8();
+
+                /* cmpb #14, 5(r5) — особый случай типа 14. */
+                uint8_t cur_type = bk_read_b((uint16_t)(cpu.r[5] + 5u));
+                psw_cmp_b(014u, cur_type);
+
+                if (cur_type == 014u) {
+                    /* clr (r5) — очистить запись. */
+                    bk_write_w(cpu.r[5], 0);
+                    psw_clr_set();
+                    /* Сброс битов в смежных ячейках карты. */
+                    {
+                        uint16_t a = (uint16_t)(cpu.r[2] - 0100u);
+                        /* bic #12000, -100(r2); bis #4000, -100(r2) */
+                        bk_write_w(a, psw_bic_w(012000u, bk_read_w(a)));
+                        bk_write_w(a, psw_bis_w(04000u,  bk_read_w(a)));
+                    }
+                    {
+                        /* bic #-77000, -2(r2) — #-77000_8 = 0x8200. */
+                        uint16_t a = (uint16_t)(cpu.r[2] - 2u);
+                        bk_write_w(a, psw_bic_w(0x8200u, bk_read_w(a)));
+                    }
+                    {
+                        /* bic #40400, 2(r2) — 0x4100. */
+                        uint16_t a = (uint16_t)(cpu.r[2] + 2u);
+                        bk_write_w(a, psw_bic_w(040400u, bk_read_w(a)));
+                    }
+                    {
+                        /* bic #20000, 100(r2) — 0x2000. */
+                        uint16_t a = (uint16_t)(cpu.r[2] + 0100u);
+                        bk_write_w(a, psw_bic_w(020000u, bk_read_w(a)));
+                    }
+                }
+                /* fall-through → next */
+            }
+        }
+        /* else cell == 0 → next */
+
+        /* 0x1454: add #6, r5; cmp #12024, r5; bgt 0x1446 */
+        cpu.r[5] = psw_add_w(0006u, cpu.r[5]);
+        psw_cmp_w(012024u, cpu.r[5]);
+        if ((int16_t)012024u > (int16_t)cpu.r[5]) continue;
+        break;
+    }
+
+    rts_pc();
+}
+
 /* ---------------------------------------------------------------------
  * R_09fe_draw_initial_map — рисователь стартовой карты уровня.
  * (0x09fe..0x0a44, 70 байт, ~24 инструкции в двух вложенных циклах.)
@@ -2433,6 +2653,7 @@ static const struct {
     { 0006054u, R_0c2c_draw_hero },       /* 0x0c2c */
     { 0006444u, R_0d24_reset_timers_redraw }, /* 0x0d24 */
     { 0004776u, R_09fe_draw_initial_map },     /* 0x09fe */
+    { 0012024u, R_1414_queue_handler },        /* 0x1414 */
     { 0007432u, R_0f1a_anim_timer3 },     /* 0x0f1a */
     { 0012442u, R_1522_draw_map },        /* 0x1522 */
     { 0012530u, R_1558_draw_8rows },      /* 0x1558 */

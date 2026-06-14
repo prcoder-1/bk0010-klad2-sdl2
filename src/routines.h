@@ -66,5 +66,6 @@ void R_03372_print_attempts(void);
 void R_07e6_inc_attempts(void);
 void R_0d24_reset_timers_redraw(void);
 void R_09fe_draw_initial_map(void);
+void R_1414_queue_handler(void);
 
 #endif /* KLAD2_ROUTINES_H */
