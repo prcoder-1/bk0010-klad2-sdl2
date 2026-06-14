@@ -30,7 +30,7 @@ BIN       := klad2
 # Объекты для тест-бинарника — только не-SDL2-модули.
 TEST_DEPS := $(BUILD)/bk.o $(BUILD)/pdp11.o $(BUILD)/audio.o $(BUILD)/routines.o $(BUILD)/emt.o $(BUILD)/klad2_font.o $(BUILD)/klad2_mon_rom.o $(BUILD)/klad2_initial.o
 
-.PHONY: all run test clean
+.PHONY: all run test clean screenshots
 
 all: $(BIN)
 
@@ -58,5 +58,28 @@ test: $(patsubst $(BUILD)/%.o,$(BUILD)/%,$(TEST_OBJS))
 
 clean:
 	rm -rf $(BUILD) $(BIN)
+
+# Воспроизвести три референсных скриншота через --auto-keys + дамп +
+# конвертер. Полезно для регрессионной проверки после изменений.
+SCREENS_DIR := docs/screens
+screenshots: $(BIN)
+	@mkdir -p $(SCREENS_DIR)
+	@echo "=== Заставка ==="
+	timeout -s INT 8 ./$(BIN) --max-steps 200000 \
+	    --dump-memory /tmp/_title.bin >/dev/null 2>&1 || true
+	./tools/bk_dump_to_ppm.py /tmp/_title.bin /tmp/_title.ppm
+	convert /tmp/_title.ppm -scale 512x512 $(SCREENS_DIR)/title_screen.png
+	@echo "=== Меню правил ==="
+	timeout -s INT 10 ./$(BIN) --auto-keys "60:Enter" --max-steps 400000 \
+	    --dump-memory /tmp/_menu.bin >/dev/null 2>&1 || true
+	./tools/bk_dump_to_ppm.py /tmp/_menu.bin /tmp/_menu.ppm
+	convert /tmp/_menu.ppm -scale 512x512 $(SCREENS_DIR)/menu_rules.png
+	@echo "=== Уровень 1 ==="
+	timeout -s INT 15 ./$(BIN) --auto-keys "60:Enter,180:1" \
+	    --max-steps 800000 --dump-memory /tmp/_game.bin >/dev/null 2>&1 || true
+	./tools/bk_dump_to_ppm.py /tmp/_game.bin /tmp/_game.ppm
+	convert /tmp/_game.ppm -scale 512x512 $(SCREENS_DIR)/gameplay_level1.png
+	@rm -f /tmp/_title.* /tmp/_menu.* /tmp/_game.*
+	@echo "Скриншоты обновлены в $(SCREENS_DIR)/"
 
 -include $(DEPS)
