@@ -817,6 +817,18 @@ static inline void psw_clr_set(void)
     cpu.psw |= PSW_Z;
 }
 
+/* Хелпер: ASR word (arithmetic shift right, sign-preserving). */
+static inline uint16_t psw_asr_w(uint16_t v)
+{
+    uint16_t r = (uint16_t)((int16_t)v >> 1);
+    cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V | PSW_C);
+    if ((int16_t)r < 0) cpu.psw |= PSW_N;
+    if (r == 0)         cpu.psw |= PSW_Z;
+    if (v & 1u)         cpu.psw |= PSW_C;
+    if (((cpu.psw & PSW_N) != 0) ^ ((cpu.psw & PSW_C) != 0)) cpu.psw |= PSW_V;
+    return r;
+}
+
 /* Хелпер: PSW по результату cmp src - dst (word). */
 static inline void psw_cmp_w(uint16_t src, uint16_t dst)
 {
@@ -1560,6 +1572,199 @@ void R_0888_int_to_dec(void)
  * на каждый ход/действие игрока. Семантически «попытка совершена»,
  * не «получил жизнь».
  * ------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------
+ * R_1754_postprocess_map — постпроцессор карты уровня после загрузки.
+ * (0x1754..0x1816, 194 байт, ~50 инструкций. Включая встроенный
+ * side-handler на 0x02aa.)
+ *
+ * Две фазы:
+ *
+ * 1. **Декомпрессия** (0x1754..0x1776): данные карты хранятся как
+ *    nibble-pairs в byte[]. Распаковываем каждый byte в две word'а:
+ *    младший nibble → следующее слово (& 0x0F),
+ *    старший nibble → дальнейшее слово (& 0xF0), потом ASR ×4.
+ *    Карта-результат лежит в [0o14550 .. 0o14550+0o2576] = 766 word'ов.
+ *
+ * 2. **Анализ соседства** (0x1778..0x1814): для каждой ячейки карты
+ *    проверяем 4 соседа (±2 байт = ±1 ячейка по X, ±0o100 байт =
+ *    ±1 строка по Y) и устанавливаем биты в самой ячейке:
+ *      cmpb #10, 2(r2)   → bit 0o1000  ; правый сосед — стенка/закр.
+ *      cmpb #10, -2(r2)  → bit 0o0400  ; левый сосед — стенка/закр.
+ *      cmpb #10, (r2)    → bit 0o4000  ; сама ячейка
+ *      cmpb #6, 100(r2)  → bit 0o4000  ; верхний сосед — пол
+ *      cmpb #11, 2(r2)   → bit 0o100000 ; правый сосед — лестница
+ *      cmpb #11, -2(r2)  → bit 0o40000  ; левый сосед — лестница
+ *      ... и ещё несколько комбинированных правил
+ *      Специальный случай (cmpb #15, 100(r2)) — handler на 0x02aa
+ *      (тип «над дверь») встраивается inline.
+ *
+ * После этого карта готова для движка. Helper для R_1086_load_level.
+ *
+ * Вызывается 1 раз на старт уровня (профайлер: 1 вызов на 12 сек).
+ * ------------------------------------------------------------------- */
+void R_1754_postprocess_map(void)
+{
+    /* mov #14550, r2 */
+    cpu.r[2] = 014550u;
+    psw_nz_w(cpu.r[2]);
+    /* mov r2, r3 */
+    cpu.r[3] = cpu.r[2];
+    psw_nz_w(cpu.r[3]);
+    /* add #2576, r3 — r3 = конец карты. */
+    cpu.r[3] = psw_add_w(02576u, cpu.r[3]);
+
+    /* === Фаза 1: декомпрессия nibble-пар. === */
+    for (;;) {
+        /* movb (r4), (r2) — байт без инкремента r4, запись в [r2]. */
+        {
+            uint8_t b = bk_read_b(cpu.r[4]);
+            bk_write_b(cpu.r[2], b);
+            psw_nz_b(b);
+        }
+        /* bic #-20, (r2)+ — word op, post-inc. (r2) &= 0x000F. */
+        {
+            uint16_t v = bk_read_w(cpu.r[2]);
+            v = psw_bic_w(0xFFF0u, v);
+            bk_write_w(cpu.r[2], v);
+            cpu.r[2] = (uint16_t)(cpu.r[2] + 2u);
+        }
+        /* movb (r4)+, (r2) — байт с инкрементом r4. */
+        {
+            uint8_t b = bk_read_b(cpu.r[4]);
+            cpu.r[4] = (uint16_t)(cpu.r[4] + 1u);
+            bk_write_b(cpu.r[2], b);
+            psw_nz_b(b);
+        }
+        /* bic #ff0f, (r2) — (r2) &= 0x00F0. */
+        {
+            uint16_t v = bk_read_w(cpu.r[2]);
+            v = psw_bic_w(0xFF0Fu, v);
+            bk_write_w(cpu.r[2], v);
+        }
+        /* asr (r2) ×3 без инкремента + asr (r2)+ с инкрементом. */
+        for (int i = 0; i < 3; i++) {
+            uint16_t v = bk_read_w(cpu.r[2]);
+            bk_write_w(cpu.r[2], psw_asr_w(v));
+        }
+        {
+            uint16_t v = bk_read_w(cpu.r[2]);
+            bk_write_w(cpu.r[2], psw_asr_w(v));
+            cpu.r[2] = (uint16_t)(cpu.r[2] + 2u);
+        }
+        /* cmp r3, r2; nop; bpl 0x175e — branch if N==0 (signed r3 >= r2). */
+        psw_cmp_w(cpu.r[3], cpu.r[2]);
+        if ((cpu.psw & PSW_N) == 0) continue;
+        break;
+    }
+
+    /* === Фаза 2: анализ соседства. === */
+    cpu.r[2] = 014550u;
+    psw_nz_w(cpu.r[2]);
+
+    for (;;) {
+        /* cmpb #10, 2(r2); bmi 0x1788 ; bis #1000, (r2) */
+        psw_cmp_b(010u, bk_read_b((uint16_t)(cpu.r[2] + 2u)));
+        if ((cpu.psw & PSW_N) == 0) {
+            uint16_t v = bk_read_w(cpu.r[2]);
+            bk_write_w(cpu.r[2], psw_bis_w(01000u, v));
+        }
+        /* cmpb #10, -2(r2); bmi 0x1794; bis #400, (r2) */
+        psw_cmp_b(010u, bk_read_b((uint16_t)(cpu.r[2] - 2u)));
+        if ((cpu.psw & PSW_N) == 0) {
+            uint16_t v = bk_read_w(cpu.r[2]);
+            bk_write_w(cpu.r[2], psw_bis_w(0400u, v));
+        }
+        /* cmpb #10, (r2); bne 0x179e; bis #4000, (r2) */
+        psw_cmp_b(010u, bk_read_b(cpu.r[2]));
+        if ((cpu.psw & PSW_Z) != 0) {
+            uint16_t v = bk_read_w(cpu.r[2]);
+            bk_write_w(cpu.r[2], psw_bis_w(04000u, v));
+        }
+        /* cmpb #6, 100(r2); bpl 0x17aa; bis #4000, (r2) */
+        psw_cmp_b(06u, bk_read_b((uint16_t)(cpu.r[2] + 0100u)));
+        if ((cpu.psw & PSW_N) != 0) {
+            uint16_t v = bk_read_w(cpu.r[2]);
+            bk_write_w(cpu.r[2], psw_bis_w(04000u, v));
+        }
+        /* cmpb #11, 2(r2); bmi 0x17b6; bis #-100000, (r2) — #-100000_8 = 0x8000 */
+        psw_cmp_b(011u, bk_read_b((uint16_t)(cpu.r[2] + 2u)));
+        if ((cpu.psw & PSW_N) == 0) {
+            uint16_t v = bk_read_w(cpu.r[2]);
+            bk_write_w(cpu.r[2], psw_bis_w(0x8000u, v));
+        }
+        /* cmpb #11, -2(r2); bmi 0x17c2; bis #40000, (r2) */
+        psw_cmp_b(011u, bk_read_b((uint16_t)(cpu.r[2] - 2u)));
+        if ((cpu.psw & PSW_N) == 0) {
+            uint16_t v = bk_read_w(cpu.r[2]);
+            bk_write_w(cpu.r[2], psw_bis_w(040000u, v));
+        }
+        /* cmpb #10, (r2); bne 0x17d4; cmpb #10, -100(r2); bmi 0x17d4; bis #20000, (r2) */
+        psw_cmp_b(010u, bk_read_b(cpu.r[2]));
+        if ((cpu.psw & PSW_Z) != 0) {
+            psw_cmp_b(010u, bk_read_b((uint16_t)(cpu.r[2] - 0100u)));
+            if ((cpu.psw & PSW_N) == 0) {
+                uint16_t v = bk_read_w(cpu.r[2]);
+                bk_write_w(cpu.r[2], psw_bis_w(020000u, v));
+            }
+        }
+        /* cmpb #10, 100(r2); bne 0x17e0; bis #10000, (r2) */
+        psw_cmp_b(010u, bk_read_b((uint16_t)(cpu.r[2] + 0100u)));
+        if ((cpu.psw & PSW_Z) != 0) {
+            uint16_t v = bk_read_w(cpu.r[2]);
+            bk_write_w(cpu.r[2], psw_bis_w(010000u, v));
+        }
+        /* cmpb #10, (r2); bne 0x17f2; cmpb #6, 100(r2); bmi 0x17f2; bis #10000, (r2) */
+        psw_cmp_b(010u, bk_read_b(cpu.r[2]));
+        if ((cpu.psw & PSW_Z) != 0) {
+            psw_cmp_b(06u, bk_read_b((uint16_t)(cpu.r[2] + 0100u)));
+            if ((cpu.psw & PSW_N) == 0) {
+                uint16_t v = bk_read_w(cpu.r[2]);
+                bk_write_w(cpu.r[2], psw_bis_w(010000u, v));
+            }
+        }
+        /* cmpb #7, 100(r2); bmi 0x17fe; bis #2000, (r2) */
+        psw_cmp_b(07u, bk_read_b((uint16_t)(cpu.r[2] + 0100u)));
+        if ((cpu.psw & PSW_N) == 0) {
+            uint16_t v = bk_read_w(cpu.r[2]);
+            bk_write_w(cpu.r[2], psw_bis_w(02000u, v));
+        }
+        /* cmpb #15, 100(r2); bgt 0x180e; bis #2000, (r2); jmp @#$02aa
+         * Спецветка для типа «над дверь». bgt = !Z && (N == V). */
+        psw_cmp_b(015u, bk_read_b((uint16_t)(cpu.r[2] + 0100u)));
+        {
+            int bgt = (((cpu.psw & PSW_Z) == 0) &&
+                       (((cpu.psw & PSW_N) != 0) == ((cpu.psw & PSW_V) != 0)));
+            if (!bgt) {
+                /* bis #2000, (r2) */
+                {
+                    uint16_t v = bk_read_w(cpu.r[2]);
+                    bk_write_w(cpu.r[2], psw_bis_w(02000u, v));
+                }
+                /* === Inline 0x02aa side-handler === */
+                /* bic #4000, (r2) */
+                {
+                    uint16_t v = bk_read_w(cpu.r[2]);
+                    bk_write_w(cpu.r[2], psw_bic_w(04000u, v));
+                }
+                /* cmpb #10, (r2); bne 0x2b8 (skip); bis #14000, (r2) */
+                psw_cmp_b(010u, bk_read_b(cpu.r[2]));
+                if ((cpu.psw & PSW_Z) != 0) {
+                    uint16_t v = bk_read_w(cpu.r[2]);
+                    bk_write_w(cpu.r[2], psw_bis_w(014000u, v));
+                }
+                /* jmp @#$14016 = 0x180e — fall through на next. */
+            }
+        }
+        /* 0x180e: add #2, r2; cmp r3, r2; bpl 0x177c */
+        cpu.r[2] = psw_add_w(02u, cpu.r[2]);
+        psw_cmp_w(cpu.r[3], cpu.r[2]);
+        if ((cpu.psw & PSW_N) == 0) continue;
+        break;
+    }
+
+    rts_pc();
+}
+
 /* ---------------------------------------------------------------------
  * R_1414_queue_handler — обработчик очереди отложенных эффектов карты.
  * (0x1414..0x14bc, 168 байт, ~50 инструкций.)
@@ -2654,6 +2859,7 @@ static const struct {
     { 0006444u, R_0d24_reset_timers_redraw }, /* 0x0d24 */
     { 0004776u, R_09fe_draw_initial_map },     /* 0x09fe */
     { 0012024u, R_1414_queue_handler },        /* 0x1414 */
+    { 0013524u, R_1754_postprocess_map },      /* 0x1754 */
     { 0007432u, R_0f1a_anim_timer3 },     /* 0x0f1a */
     { 0012442u, R_1522_draw_map },        /* 0x1522 */
     { 0012530u, R_1558_draw_8rows },      /* 0x1558 */

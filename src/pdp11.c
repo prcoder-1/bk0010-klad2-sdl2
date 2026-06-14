@@ -133,6 +133,7 @@ static const struct {
     { 0006444u, R_0d24_reset_timers_redraw,   "R_0d24"  },
     { 0004776u, R_09fe_draw_initial_map,      "R_09fe"  },
     { 0012024u, R_1414_queue_handler,         "R_1414"  },
+    { 0013524u, R_1754_postprocess_map,       "R_1754"  },
     { 0006552u, R_06632_main_e2,              "R_06632" }, /* настоящий entry 0x0d6a */
     { 0007306u, R_07306_hero_teleport,        "R_07306" },
     { 0007462u, R_07462_main_e1,              "R_07462" },
