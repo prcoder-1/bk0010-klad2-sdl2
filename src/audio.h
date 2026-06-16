@@ -33,4 +33,10 @@ void audio_flush(void);
  * SDL-очередь. */
 void audio_emit_bell(void);
 
+/* Возвращает 1 если в данный момент активен burst write-strobe в EXT_DEV
+ * (т.е. КЛАД-2 крутит звуковой loop типа drown sequence). Main.c в этот
+ * период умножает g_steps_per_frame на (4000 / current_speed), чтобы темп
+ * звука и pitch совпадали с --speed 4000 независимо от выбранного speed. */
+int audio_drown_active(void);
+
 #endif /* KLAD2_AUDIO_H */

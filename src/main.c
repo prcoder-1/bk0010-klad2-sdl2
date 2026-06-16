@@ -481,7 +481,15 @@ int main(int argc, char **argv)
         }
 
         if (run_cpu && !cpu.halted && !paused) {
-            int n = pdp11_run_n(g_steps_per_frame);
+            /* Adaptive boost: при активном звуковом loop (drown sequence)
+             * умножаем шаги за кадр, чтобы темп и pitch нот совпали с
+             * --speed 4000 даже при пользовательском --speed < 4000. */
+            int steps = g_steps_per_frame;
+            if (audio_drown_active() && g_steps_per_frame < 4000) {
+                int scale = 4000 / g_steps_per_frame;
+                steps *= scale;
+            }
+            int n = pdp11_run_n(steps);
             bk_tick_timer((unsigned)n);
             audio_flush();
             if (max_steps > 0) {

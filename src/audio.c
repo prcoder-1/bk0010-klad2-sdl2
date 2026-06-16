@@ -103,12 +103,37 @@ void audio_shutdown(void)
 static unsigned g_write_count;   /* любые записи в EXT_DEV.MAG_KEY */
 static unsigned g_toggle_count;  /* только смены уровня */
 
+/* Burst-detection: 3+ toggle EXT_DEV за 100 мс = активный звуковой loop. */
+static Uint32 g_drown_active_until;
+
+int audio_drown_active(void)
+{
+    return SDL_GetTicks() < g_drown_active_until;
+}
+
 void audio_speaker_set(int level)
 {
     int16_t new_level = level ? AUDIO_AMPLITUDE : -AUDIO_AMPLITUDE;
     g_write_count++;
     if (new_level != g_level) g_toggle_count++;
     g_level = new_level;
+
+    /* Когда КЛАД-2 крутит drown loop на 0o6376/0o6410 (write-strobe в
+     * EXT_DEV), счётчик растёт быстро. По burst (>=3 за 100 мс) включаем
+     * флаг — main.c в этот период даёт CPU больше шагов за кадр,
+     * чтобы темп нот совпал с --speed 4000. */
+    static Uint32 burst_start;
+    static unsigned burst_n;
+    Uint32 now = SDL_GetTicks();
+    if (now - burst_start > 100) {
+        burst_start = now;
+        burst_n = 1;
+    } else {
+        burst_n++;
+    }
+    if (burst_n >= 3) {
+        g_drown_active_until = now + 100;
+    }
 }
 
 /* Раз в секунду печатает счётчики:
