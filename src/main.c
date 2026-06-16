@@ -124,14 +124,7 @@ static void inject_key(SDL_Keycode k, int down)
  * адаптацию.
  *
  * Не static — нужен из audio.c для подбора частоты сэмплинга. */
-int g_steps_per_frame      = 4000;  /* единая скорость CPU */
-/* Адаптивный темп переключения скорости УБРАН: он сломал звук
- * утопления и подобные write-strobe эффекты, которые генерируются
- * интерпретатором в реальном времени. Теперь CPU всегда крутится
- * с одной скоростью, а main loop тормозится через real-time sleep
- * в C-замене R_02c6_delay (см. routines.c). Это даёт и нормальный
- * темп игры (50 iter/сек), и правильную частоту звуковых эффектов. */
-
+int g_steps_per_frame      = 500;  /* единая скорость CPU */
 static SDL_Window   *g_window;
 static SDL_Renderer *g_renderer;
 

@@ -186,8 +186,17 @@ void bk_tick_timer(unsigned cpu_steps)
 
 /* ---------------- Перехватчики доступа к регистрам -------------------- */
 
+extern struct { uint16_t r[8]; uint16_t psw; int halted; } cpu;
 static void on_write_ext_dev(uint16_t value)
 {
+    if (getenv("KLAD2_EXTDEV_TRACE")) {
+        static unsigned cnt;
+        if (cnt < 30) {
+            fprintf(stderr, "[EXT_DEV] PC=%06o value=%06o\n",
+                    cpu.r[7], value);
+            cnt++;
+        }
+    }
     /* На реальной БК любая запись в REG_EXT_DEV генерирует короткий
      * импульс (write-strobe) на пьезодинамике, независимо от значения
      * бита MAG_KEY. КЛАД-2 этим пользуется: пишет CLR @#0o177716 в

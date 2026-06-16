@@ -103,34 +103,12 @@ void audio_shutdown(void)
 static unsigned g_write_count;   /* любые записи в EXT_DEV.MAG_KEY */
 static unsigned g_toggle_count;  /* только смены уровня */
 
-static Uint32 g_drown_active_until;  /* fwd, used by audio_speaker_set */
-
 void audio_speaker_set(int level)
 {
     int16_t new_level = level ? AUDIO_AMPLITUDE : -AUDIO_AMPLITUDE;
     g_write_count++;
     if (new_level != g_level) g_toggle_count++;
     g_level = new_level;
-
-    /* Burst detection: КЛАД-2 на drown loop (PC ~0o6376/0o6410) пишет
-     * в EXT_DEV ~37-75 раз/сек, что на нашем CPU rate даёт меандр
-     * 18-37 Гц — низкое ворчание вместо «буль-буль». Детектируем
-     * burst write-strobe (≥3 toggle за 100 мс) и переключаем выход
-     * на синтез drown_buf (1500→3000 Гц) по реальному времени. */
-    {
-        static Uint32 burst_start;
-        static unsigned burst_n;
-        Uint32 now = SDL_GetTicks();
-        if (now - burst_start > 100) {
-            burst_start = now;
-            burst_n = 1;
-        } else {
-            burst_n++;
-        }
-        if (burst_n >= 3) {
-            g_drown_active_until = now + 100;
-        }
-    }
 }
 
 /* Раз в секунду печатает счётчики:
@@ -162,7 +140,7 @@ void audio_step(void)
         recalc_sample_rate();
     }
 
-    g_acc += g_samples_per_step ;
+    g_acc += g_samples_per_step;
     /* WHILE, не IF: при g_samples_per_step > 1 (например 4.9 в
      * gameplay) нам нужно класть НЕСКОЛЬКО сэмплов за один step,
      * иначе буфер не заполняется и SDL играет рваные кусочки. */
@@ -175,23 +153,9 @@ void audio_step(void)
     if (g_buf_pos >= AUDIO_FRAME_BUF) g_acc = 0;
 }
 
-static unsigned g_bell_count;
-
 void audio_emit_bell(void)
 {
     if (!g_dev) return;
-
-    g_bell_count++;
-    if (getenv("KLAD2_AUDIO_LOG")) {
-        static Uint32 last_log;
-        Uint32 now = SDL_GetTicks();
-        if (now - last_log >= 1000) {
-            fprintf(stderr, "[bell] audio_emit_bell rate=%u/сек\n",
-                    g_bell_count);
-            g_bell_count = 0;
-            last_log = now;
-        }
-    }
 
     /* Точная копия ROM-процедуры из bk10_017_mon.rom (адрес 0o102032):
      *
@@ -248,86 +212,12 @@ done:
     SDL_QueueAudio(g_dev, buf, (Uint32)(idx * sizeof(int16_t)));
 }
 
-/* Drown-mode синтезатор: пока g_drown_active_until > now, audio_flush
- * заполняет SDL-очередь непрерывным меандром со свипом 800→200 Гц,
- * имитирующим «бульканье» утопления. Активируется из
- * audio_emit_drown_tick() которая, в свою очередь, вызывается из
- * C-замены death-handler'а 0x0bd4 (R_0bd4_death_tick) на каждой
- * итерации main loop'а пока идёт анимация гибели. Это разрывает
- * зависимость частоты звука от темпа CPU. */
-static Uint32 g_drown_active_until;
-
-static unsigned g_drown_tick_count;
-
-void audio_emit_drown_tick(void)
-{
-    /* Продлеваем drown ещё на 50 мс с текущего тика. Если main loop
-     * прокручивается медленнее этого периода, audio_flush «дотянет»
-     * хвост; если быстрее, продление перекрывается → непрерывное
-     * звучание независимо от темпа. */
-    g_drown_active_until = SDL_GetTicks() + 50;
-    g_drown_tick_count++;
-    if (getenv("KLAD2_AUDIO_LOG")) {
-        static Uint32 last_log;
-        Uint32 now = SDL_GetTicks();
-        if (now - last_log >= 1000) {
-            fprintf(stderr, "[drown] R_0bd4 ticks/sec=%u\n", g_drown_tick_count);
-            g_drown_tick_count = 0;
-            last_log = now;
-        }
-    }
-}
-
 void audio_flush(void)
 {
     audio_log_tick();
-    if (!g_dev) return;
-
-    Uint32 now = SDL_GetTicks();
-
-    /* === Drown synthesis: повторяющиеся свип-«плики» как у BEL
-     * (1500→3000 Гц за 25 мс), стыкуются без пауз. Это даёт серию
-     * «плик-плик-плик» = звук бульканья. */
-    if (g_drown_active_until > now) {
-        enum {
-            FRAME_SAMPLES = 735,         /* 1/60 сек @ 44100 Гц */
-            PLIK_HALF_START = 15,        /* ≈ 1500 Гц */
-            PLIK_HALF_END   = 7,         /* ≈ 3150 Гц */
-            PLIK_TOTAL_SAMPLES = 1100,   /* ≈ 25 мс на «плик» */
-        };
-        static unsigned in_plik;  /* позиция внутри текущего «плика» */
-        static unsigned phase;    /* для генерации меандра */
-        int16_t drown_buf[FRAME_SAMPLES];
-
-        for (int i = 0; i < FRAME_SAMPLES; i++) {
-            /* half_period линейно убывает с PLIK_HALF_START до
-             * PLIK_HALF_END за PLIK_TOTAL_SAMPLES. */
-            unsigned half = PLIK_HALF_START -
-                            (PLIK_HALF_START - PLIK_HALF_END) *
-                            in_plik / PLIK_TOTAL_SAMPLES;
-            drown_buf[i] = ((phase / half) & 1u) ?
-                            AUDIO_AMPLITUDE : -AUDIO_AMPLITUDE;
-            phase++;
-            in_plik++;
-            if (in_plik >= PLIK_TOTAL_SAMPLES) {
-                in_plik = 0;  /* следующий «плик» */
-                phase = 0;
-            }
-        }
-        /* Контроль накопления: не больше 100 мс впрок. */
-        if (SDL_GetQueuedAudioSize(g_dev) < AUDIO_SAMPLE_RATE * 2 / 10) {
-            SDL_QueueAudio(g_dev, drown_buf,
-                           (Uint32)(FRAME_SAMPLES * sizeof(int16_t)));
-        }
-        /* Сбрасываем обычный буфер чтобы drown не наслаивался с
-         * write-strobe шумом. */
-        g_buf_pos = 0;
-        g_acc = 0;
-        return;
-    }
-
-    /* === Обычный flush === */
-    if (g_buf_pos == 0) return;
+    if (!g_dev || g_buf_pos == 0) return;
+    /* Защита от длительного отставания: если в очереди > 0.5 сек звука,
+     * сбросим лишнее, чтобы не было «эха»/задержки при паузе.  */
     Uint32 queued = SDL_GetQueuedAudioSize(g_dev);
     if (queued > (Uint32)(AUDIO_SAMPLE_RATE * sizeof(int16_t) / 2)) {
         SDL_ClearQueuedAudio(g_dev);
