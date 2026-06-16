@@ -124,7 +124,7 @@ static void inject_key(SDL_Keycode k, int down)
  * адаптацию.
  *
  * Не static — нужен из audio.c для подбора частоты сэмплинга. */
-int g_steps_per_frame      = 500;  /* единая скорость CPU */
+int g_steps_per_frame      = 300;  /* единая скорость CPU */
 static SDL_Window   *g_window;
 static SDL_Renderer *g_renderer;
 
