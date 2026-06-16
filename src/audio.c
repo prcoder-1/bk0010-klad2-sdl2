@@ -103,6 +103,8 @@ void audio_shutdown(void)
 static unsigned g_write_count;   /* любые записи в EXT_DEV.MAG_KEY */
 static unsigned g_toggle_count;  /* только смены уровня */
 
+static Uint32 g_drown_active_until;  /* fwd, used by audio_speaker_set */
+
 void audio_speaker_set(int level)
 {
     int16_t new_level = level ? AUDIO_AMPLITUDE : -AUDIO_AMPLITUDE;
