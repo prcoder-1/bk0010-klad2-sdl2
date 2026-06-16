@@ -140,7 +140,7 @@ void audio_step(void)
         recalc_sample_rate();
     }
 
-    g_acc += g_samples_per_step;
+    g_acc += g_samples_per_step ;
     /* WHILE, не IF: при g_samples_per_step > 1 (например 4.9 в
      * gameplay) нам нужно класть НЕСКОЛЬКО сэмплов за один step,
      * иначе буфер не заполняется и SDL играет рваные кусочки. */
@@ -212,12 +212,61 @@ done:
     SDL_QueueAudio(g_dev, buf, (Uint32)(idx * sizeof(int16_t)));
 }
 
+/* Drown-mode синтезатор: пока g_drown_active_until > now, audio_flush
+ * заполняет SDL-очередь непрерывным меандром со свипом 800→200 Гц,
+ * имитирующим «бульканье» утопления. Активируется из
+ * audio_emit_drown_tick() которая, в свою очередь, вызывается из
+ * C-замены death-handler'а 0x0bd4 (R_0bd4_death_tick) на каждой
+ * итерации main loop'а пока идёт анимация гибели. Это разрывает
+ * зависимость частоты звука от темпа CPU. */
+static Uint32 g_drown_active_until;
+
+void audio_emit_drown_tick(void)
+{
+    /* Продлеваем drown ещё на 50 мс с текущего тика. Если main loop
+     * прокручивается медленнее этого периода, audio_flush «дотянет»
+     * хвост; если быстрее, продление перекрывается → непрерывное
+     * звучание независимо от темпа. */
+    g_drown_active_until = SDL_GetTicks() + 50;
+}
+
 void audio_flush(void)
 {
     audio_log_tick();
-    if (!g_dev || g_buf_pos == 0) return;
-    /* Защита от длительного отставания: если в очереди > 0.5 сек звука,
-     * сбросим лишнее, чтобы не было «эха»/задержки при паузе.  */
+    if (!g_dev) return;
+
+    Uint32 now = SDL_GetTicks();
+
+    /* === Drown synthesis: реал-тайм меандр со свипом === */
+    if (g_drown_active_until > now) {
+        enum { FRAME_SAMPLES = 735 };  /* ≈ 1/60 сек @ 44100 Hz */
+        static unsigned phase;
+        static unsigned sweep;
+        int16_t drown_buf[FRAME_SAMPLES];
+
+        for (int i = 0; i < FRAME_SAMPLES; i++) {
+            /* Свип частоты по треугольнику: 800 → 200 → 800 Гц
+             * за 0.5 сек. half_period от ~28 (800 Гц) до ~110 (200 Гц). */
+            unsigned half = 28 + ((sweep / 100) % 80);
+            drown_buf[i] = ((phase / half) & 1u) ?
+                            AUDIO_AMPLITUDE : -AUDIO_AMPLITUDE;
+            phase++;
+            sweep++;
+        }
+        /* Контроль накопления: не больше 100 мс впрок. */
+        if (SDL_GetQueuedAudioSize(g_dev) < AUDIO_SAMPLE_RATE * 2 / 10) {
+            SDL_QueueAudio(g_dev, drown_buf,
+                           (Uint32)(FRAME_SAMPLES * sizeof(int16_t)));
+        }
+        /* Сбрасываем обычный буфер чтобы drown не наслаивался с
+         * write-strobe шумом. */
+        g_buf_pos = 0;
+        g_acc = 0;
+        return;
+    }
+
+    /* === Обычный flush === */
+    if (g_buf_pos == 0) return;
     Uint32 queued = SDL_GetQueuedAudioSize(g_dev);
     if (queued > (Uint32)(AUDIO_SAMPLE_RATE * sizeof(int16_t) / 2)) {
         SDL_ClearQueuedAudio(g_dev);
