@@ -33,10 +33,10 @@ static int par_bit_for_key(SDL_Keycode sym)
     case SDLK_RIGHT:  return PAR_INTERF_RIGHT;
     case SDLK_DOWN:   return PAR_INTERF_DOWN;
     case SDLK_LEFT:   return PAR_INTERF_LEFT;
-    case SDLK_LSHIFT:
-    case SDLK_LCTRL:  return PAR_INTERF_LEFT_BUTTON;
-    case SDLK_RSHIFT:
-    case SDLK_RCTRL:  return PAR_INTERF_RIGHT_BUTTON;
+    /* Shift/Ctrl (стрельба) идут через REG_KEY_DATA как РУС/ЛАТ
+     * (коды 0o16/0o17), а не через PAR_INTERF. На реальной БК биты
+     * LEFT_BUTTON/RIGHT_BUTTON в порту относятся к джойстику
+     * «Электроника», который КЛАД-2 не использует. */
     default: return -1;
     }
 }
