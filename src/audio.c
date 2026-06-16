@@ -158,11 +158,20 @@ static void audio_log_tick(void)
 
 void audio_step(void)
 {
-    /* Адаптивный темп: если main.c переключил g_steps_per_frame
-     * (например с 4000 на 150 при входе в gameplay), пересчитать
-     * соотношение сэмплов к step'ам. */
-    if (g_steps_per_frame != g_samples_steps_per_frame) {
-        recalc_sample_rate();
+    /* Effective CPU rate: при активном drown-boost main.c крутит
+     * pdp11_run_n с steps × scale, фактически CPU работает в темпе
+     * --speed 4000. Подстраиваем g_samples_per_step под этот темп,
+     * иначе g_buf переполняется в `scale` раз → меандр output в
+     * `scale` раз ниже, мелодия играется в неправильной тональности. */
+    int effective_steps = g_steps_per_frame;
+    if (audio_drown_active() && effective_steps < 4000) {
+        effective_steps = 4000;
+    }
+    if (effective_steps != g_samples_steps_per_frame) {
+        int cpu_rate = effective_steps * 60;
+        if (cpu_rate < 1) cpu_rate = 240000;
+        g_samples_per_step       = (double)AUDIO_SAMPLE_RATE / (double)cpu_rate;
+        g_samples_steps_per_frame = effective_steps;
     }
 
     g_acc += g_samples_per_step;
