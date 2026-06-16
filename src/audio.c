@@ -245,9 +245,11 @@ void audio_flush(void)
         int16_t drown_buf[FRAME_SAMPLES];
 
         for (int i = 0; i < FRAME_SAMPLES; i++) {
-            /* Свип частоты по треугольнику: 800 → 200 → 800 Гц
-             * за 0.5 сек. half_period от ~28 (800 Гц) до ~110 (200 Гц). */
-            unsigned half = 28 + ((sweep / 100) % 80);
+            /* Свип частоты по треугольнику: 1500 → 500 → 1500 Гц
+             * за 0.25 сек. half_period_samples от 15 (1500 Гц)
+             * до 44 (500 Гц). Это совпадает с реальным «плик» BEL
+             * на БК и звучит как ускоренное «бульканье». */
+            unsigned half = 15 + ((sweep / 200) % 30);
             drown_buf[i] = ((phase / half) & 1u) ?
                             AUDIO_AMPLITUDE : -AUDIO_AMPLITUDE;
             phase++;
