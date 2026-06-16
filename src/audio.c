@@ -221,6 +221,8 @@ done:
  * зависимость частоты звука от темпа CPU. */
 static Uint32 g_drown_active_until;
 
+static unsigned g_drown_tick_count;
+
 void audio_emit_drown_tick(void)
 {
     /* Продлеваем drown ещё на 50 мс с текущего тика. Если main loop
@@ -228,6 +230,16 @@ void audio_emit_drown_tick(void)
      * хвост; если быстрее, продление перекрывается → непрерывное
      * звучание независимо от темпа. */
     g_drown_active_until = SDL_GetTicks() + 50;
+    g_drown_tick_count++;
+    if (getenv("KLAD2_AUDIO_LOG")) {
+        static Uint32 last_log;
+        Uint32 now = SDL_GetTicks();
+        if (now - last_log >= 1000) {
+            fprintf(stderr, "[drown] R_0bd4 ticks/sec=%u\n", g_drown_tick_count);
+            g_drown_tick_count = 0;
+            last_log = now;
+        }
+    }
 }
 
 void audio_flush(void)
@@ -237,23 +249,34 @@ void audio_flush(void)
 
     Uint32 now = SDL_GetTicks();
 
-    /* === Drown synthesis: реал-тайм меандр со свипом === */
+    /* === Drown synthesis: повторяющиеся свип-«плики» как у BEL
+     * (1500→3000 Гц за 25 мс), стыкуются без пауз. Это даёт серию
+     * «плик-плик-плик» = звук бульканья. */
     if (g_drown_active_until > now) {
-        enum { FRAME_SAMPLES = 735 };  /* ≈ 1/60 сек @ 44100 Hz */
-        static unsigned phase;
-        static unsigned sweep;
+        enum {
+            FRAME_SAMPLES = 735,         /* 1/60 сек @ 44100 Гц */
+            PLIK_HALF_START = 15,        /* ≈ 1500 Гц */
+            PLIK_HALF_END   = 7,         /* ≈ 3150 Гц */
+            PLIK_TOTAL_SAMPLES = 1100,   /* ≈ 25 мс на «плик» */
+        };
+        static unsigned in_plik;  /* позиция внутри текущего «плика» */
+        static unsigned phase;    /* для генерации меандра */
         int16_t drown_buf[FRAME_SAMPLES];
 
         for (int i = 0; i < FRAME_SAMPLES; i++) {
-            /* Свип частоты по треугольнику: 1500 → 500 → 1500 Гц
-             * за 0.25 сек. half_period_samples от 15 (1500 Гц)
-             * до 44 (500 Гц). Это совпадает с реальным «плик» BEL
-             * на БК и звучит как ускоренное «бульканье». */
-            unsigned half = 15 + ((sweep / 200) % 30);
+            /* half_period линейно убывает с PLIK_HALF_START до
+             * PLIK_HALF_END за PLIK_TOTAL_SAMPLES. */
+            unsigned half = PLIK_HALF_START -
+                            (PLIK_HALF_START - PLIK_HALF_END) *
+                            in_plik / PLIK_TOTAL_SAMPLES;
             drown_buf[i] = ((phase / half) & 1u) ?
                             AUDIO_AMPLITUDE : -AUDIO_AMPLITUDE;
             phase++;
-            sweep++;
+            in_plik++;
+            if (in_plik >= PLIK_TOTAL_SAMPLES) {
+                in_plik = 0;  /* следующий «плик» */
+                phase = 0;
+            }
         }
         /* Контроль накопления: не больше 100 мс впрок. */
         if (SDL_GetQueuedAudioSize(g_dev) < AUDIO_SAMPLE_RATE * 2 / 10) {
