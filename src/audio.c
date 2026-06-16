@@ -109,6 +109,26 @@ void audio_speaker_set(int level)
     g_write_count++;
     if (new_level != g_level) g_toggle_count++;
     g_level = new_level;
+
+    /* Burst detection: КЛАД-2 на drown loop (PC ~0o6376/0o6410) пишет
+     * в EXT_DEV ~37-75 раз/сек, что на нашем CPU rate даёт меандр
+     * 18-37 Гц — низкое ворчание вместо «буль-буль». Детектируем
+     * burst write-strobe (≥3 toggle за 100 мс) и переключаем выход
+     * на синтез drown_buf (1500→3000 Гц) по реальному времени. */
+    {
+        static Uint32 burst_start;
+        static unsigned burst_n;
+        Uint32 now = SDL_GetTicks();
+        if (now - burst_start > 100) {
+            burst_start = now;
+            burst_n = 1;
+        } else {
+            burst_n++;
+        }
+        if (burst_n >= 3) {
+            g_drown_active_until = now + 100;
+        }
+    }
 }
 
 /* Раз в секунду печатает счётчики:
