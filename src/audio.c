@@ -153,9 +153,23 @@ void audio_step(void)
     if (g_buf_pos >= AUDIO_FRAME_BUF) g_acc = 0;
 }
 
+static unsigned g_bell_count;
+
 void audio_emit_bell(void)
 {
     if (!g_dev) return;
+
+    g_bell_count++;
+    if (getenv("KLAD2_AUDIO_LOG")) {
+        static Uint32 last_log;
+        Uint32 now = SDL_GetTicks();
+        if (now - last_log >= 1000) {
+            fprintf(stderr, "[bell] audio_emit_bell rate=%u/сек\n",
+                    g_bell_count);
+            g_bell_count = 0;
+            last_log = now;
+        }
+    }
 
     /* Точная копия ROM-процедуры из bk10_017_mon.rom (адрес 0o102032):
      *
