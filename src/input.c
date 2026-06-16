@@ -49,10 +49,9 @@ int input_init(void)
     bk_mem[REG_KEY_DATA + 1]  = 0;
     bk_mem[SYS_LAST_KEY]      = 0;
     bk_mem[SYS_LAST_KEY_FLAG] = 0;
-    /* Порт параллельного интерфейса БК активно-низкий: idle = 0xFF
-     * (все биты = «отпущено»), нажатие сбрасывает бит. */
-    bk_mem[REG_PAR_INTERF]     = 0xFF;
-    bk_mem[REG_PAR_INTERF + 1] = 0xFF;
+    /* Порт активно-высокий (откатано). */
+    bk_mem[REG_PAR_INTERF]     = 0;
+    bk_mem[REG_PAR_INTERF + 1] = 0;
     /* MAG_KEY (бит 6 в REG_EXT_DEV) активно-низкий: 1 = клавиша
      * НЕ нажата (исходное состояние БК). Без этого КЛАД-2 видит
      * «всегда нажата какая-то клавиша» и зацикливается на reading
@@ -122,12 +121,11 @@ int input_handle_sdl_event(const SDL_Event *ev)
     if (g_keys_held > 0) bk_mem[REG_EXT_DEV] &= (uint8_t)~(1u << EXT_DEV_MAG_KEY);
     else                 bk_mem[REG_EXT_DEV] |= (uint8_t)(1u << EXT_DEV_MAG_KEY);
 
-    /* 1. Порт параллельного интерфейса БК (REG_PAR_INTERF), **активно-
-     *    низкий**: нажатие сбрасывает бит, отпускание устанавливает. */
+    /* 1. Порт активно-высокий: нажатие ставит бит, отпускание сбрасывает. */
     int bit = par_bit_for_key(sym);
     if (bit >= 0) {
-        if (pressed) bk_mem[REG_PAR_INTERF] &= (uint8_t)~(1u << bit);
-        else         bk_mem[REG_PAR_INTERF] |= (uint8_t)(1u << bit);
+        if (pressed) bk_mem[REG_PAR_INTERF] |= (uint8_t)(1u << bit);
+        else         bk_mem[REG_PAR_INTERF] &= (uint8_t)~(1u << bit);
     }
 
     /* 2. Регистр клавиатуры (REG_KEY_DATA) и SYS_LAST_KEY: на БК-0010
