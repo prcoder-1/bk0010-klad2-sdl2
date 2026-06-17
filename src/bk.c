@@ -260,6 +260,16 @@ static void on_read_key_data(uint16_t addr)
 {
     if ((addr & 0xFFFEu) == REG_KEY_DATA) {
         bk_mem[REG_KEY_STATE] &= (uint8_t)~(1u << KEY_STATE_STATE);
+        /* На реальной БК клавиатурный контроллер при отсутствии новой
+         * клавиши возвращает 0 в KEY_DATA (либо обновляет байт scan'ом).
+         * КЛАД-2 на 0x2ec читает KEY_DATA НЕ проверяя KEY_STATE.STATE
+         * и ожидает что stale code очистится — иначе при stale '2'
+         * (выбор уровня) герой каждый кадр получает «нет валидной
+         * клавиши» → анимация падения = соскальзывание с лестницы.
+         * Эмулируем: сбрасываем KEY_DATA после чтения, кодовый байт
+         * восстановится при следующем KEYDOWN. */
+        bk_mem[REG_KEY_DATA]     = 0;
+        bk_mem[REG_KEY_DATA + 1] = 0;
     }
 }
 
