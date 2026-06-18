@@ -64,6 +64,45 @@ int input_init(void)
  * корректного отслеживания состояния MAG_KEY. */
 static int g_keys_held;
 
+/* Forward declarations. */
+static uint8_t sdl_to_bk_code(SDL_Keycode sym, uint16_t mod);
+
+/* Эмулятор auto-repeat БК-клавиатуры: пока пользователь удерживает
+ * клавишу, контроллер БК периодически защёлкивает её скан-код в
+ * REG_KEY_DATA и поднимает KEY_STATE.STATE. КЛАД-2 на 0x2ec читает
+ * KEY_DATA каждый кадр и ожидает что код будет там пока кнопка
+ * удерживается. SDL посылает только один KEYDOWN на нажатие, поэтому
+ * мы сами восстанавливаем код при чтении (см. input_repeat_held). */
+static SDL_Keycode g_held_sym;  /* последняя удерживаемая клавиша или 0 */
+static uint8_t     g_held_code; /* её БК-код */
+
+static void input_set_held(SDL_Keycode sym)
+{
+    g_held_sym  = sym;
+    g_held_code = sdl_to_bk_code(sym, 0);
+}
+
+static void input_release_held(SDL_Keycode sym)
+{
+    if (g_held_sym == sym) {
+        g_held_sym  = 0;
+        g_held_code = 0;
+    }
+}
+
+/* Вызывается из bk.c::on_read_key_data ПОСЛЕ чтения, чтобы
+ * восстановить код удерживаемой клавиши и поднять STATE заново —
+ * эмулирует scan-based auto-repeat hardware. */
+void input_repeat_held(void)
+{
+    if (g_held_code) {
+        bk_mem[REG_KEY_DATA]      = g_held_code;
+        bk_mem[SYS_LAST_KEY]      = g_held_code;
+        bk_mem[SYS_LAST_KEY_FLAG] = 1;
+        bk_mem[REG_KEY_STATE]    |= (uint8_t)(1u << KEY_STATE_STATE);
+    }
+}
+
 void input_shutdown(void) {}
 
 static uint8_t sdl_to_bk_code(SDL_Keycode sym, uint16_t mod)
@@ -147,7 +186,10 @@ int input_handle_sdl_event(const SDL_Event *ev)
             bk_mem[SYS_LAST_KEY]      = code;
             bk_mem[SYS_LAST_KEY_FLAG] = 1;
             bk_mem[REG_KEY_STATE]    |= (uint8_t)(1u << KEY_STATE_STATE);
+            input_set_held(sym);
         }
+    } else if (!pressed) {
+        input_release_held(sym);
     }
 
     return 0;

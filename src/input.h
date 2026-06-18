@@ -20,4 +20,9 @@ void input_shutdown(void);
  * на выход (например, СТОП в Фазе 5; пока — всегда 0). */
 int  input_handle_sdl_event(const SDL_Event *ev);
 
+/* Вызывается из bk.c::on_read_key_data ПОСЛЕ сброса KEY_DATA, чтобы
+ * восстановить код удерживаемой клавиши и поднять STATE — эмулирует
+ * scan-based auto-repeat hardware БК-клавиатуры. */
+void input_repeat_held(void);
+
 #endif /* KLAD2_INPUT_H */

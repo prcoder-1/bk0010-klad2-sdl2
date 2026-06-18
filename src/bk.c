@@ -12,6 +12,7 @@
 
 #include "bk.h"
 #include "audio.h"
+#include "input.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -270,6 +271,12 @@ static void on_read_key_data(uint16_t addr)
          * восстановится при следующем KEYDOWN. */
         bk_mem[REG_KEY_DATA]     = 0;
         bk_mem[REG_KEY_DATA + 1] = 0;
+        /* Если пользователь УДЕРЖИВАЕТ клавишу, эмулируем scan-based
+         * auto-repeat: восстанавливаем код в KEY_DATA и STATE сразу
+         * после сброса. КЛАД-2 при следующем чтении снова получит код,
+         * как будто кнопка нажалась повторно. При отпущенной клавише
+         * KEY_DATA остаётся 0, КЛАД-2 видит «нет ввода». */
+        input_repeat_held();
     }
 }
 
