@@ -308,6 +308,7 @@ uint16_t bk_read_w(uint16_t addr)
 
 bk_write_hook_fn bk_write_hook;
 
+
 void bk_write_b(uint16_t addr, uint8_t value)
 {
     bk_mem[addr] = value;
