@@ -155,6 +155,7 @@ static const struct {
     { 0012442u, R_1522_draw_map,              "R_1522"  },
     { 0012530u, R_1558_draw_8rows,            "R_1558"  },
     { 0012326u, R_14d6_bel,                   "R_14d6" },
+    { 0006204u, R_06204_play_melody,          "R_06204" },
     { 0012716u, R_15ce_clear_cell,            "R_15ce" },
 };
 
