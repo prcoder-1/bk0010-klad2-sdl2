@@ -3530,7 +3530,6 @@ static const struct {
     { 0012442u, R_1522_draw_map },        /* 0x1522 */
     { 0012530u, R_1558_draw_8rows },      /* 0x1558 */
     { 0012326u, R_14d6_bel },             /* 0x14d6 */
-    { 0006204u, R_06204_play_melody },    /* 0x0c84 */
     { 0012716u, R_15ce_clear_cell },      /* 0x15ce */
 };
 
