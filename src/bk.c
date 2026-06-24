@@ -13,6 +13,7 @@
 #include "bk.h"
 #include "audio.h"
 #include "input.h"
+#include "pdp11.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -187,7 +188,6 @@ void bk_tick_timer(unsigned cpu_steps)
 
 /* ---------------- Перехватчики доступа к регистрам -------------------- */
 
-extern struct { uint16_t r[8]; uint16_t psw; int halted; } cpu;
 static void on_write_ext_dev(uint16_t value)
 {
     if (getenv("KLAD2_EXTDEV_TRACE")) {
@@ -261,28 +261,11 @@ static void on_read_key_data(uint16_t addr)
 {
     if ((addr & 0xFFFEu) == REG_KEY_DATA) {
         bk_mem[REG_KEY_STATE] &= (uint8_t)~(1u << KEY_STATE_STATE);
-        /* На реальной БК клавиатурный контроллер при отсутствии новой
-         * клавиши возвращает 0 в KEY_DATA (либо обновляет байт scan'ом).
-         * КЛАД-2 на 0x2ec читает KEY_DATA НЕ проверяя KEY_STATE.STATE
-         * и ожидает что stale code очистится — иначе при stale '2'
-         * (выбор уровня) герой каждый кадр получает «нет валидной
-         * клавиши» → анимация падения = соскальзывание с лестницы.
-         * Эмулируем: сбрасываем KEY_DATA после чтения, кодовый байт
-         * восстановится при следующем KEYDOWN. */
-        /* Сбрасываем в 0o377 (а не 0), потому что КЛАД-2 на 0x306
-         * ищет код в таблице направлений 0x1732 через `cmp (r5)+, r0`
-         * — там есть НУЛИ в позициях 2/3/6/7/8, и сброс в 0 даёт
-         * ложное совпадение → герой получает «направление» 0o22
-         * (движение вправо) без нажатия. 0o377 точно не встречается:
-         * максимум в таблице 0o33 (↓), cmp #50 (= 50 dec) для 0o377
-         * (= 255) даёт C=1 → bcc не сработает → loop без direction. */
+        /* Сбрасываем KEY_DATA в 0o377: таблица направлений @ 0o1732
+         * имеет нули в позициях 2/3/6/7/8 — сброс в 0 даст ложное
+         * совпадение. 0o377 точно не в таблице. */
         bk_mem[REG_KEY_DATA]     = 0377;
         bk_mem[REG_KEY_DATA + 1] = 0;
-        /* Если пользователь УДЕРЖИВАЕТ клавишу, эмулируем scan-based
-         * auto-repeat: восстанавливаем код в KEY_DATA и STATE сразу
-         * после сброса. КЛАД-2 при следующем чтении снова получит код,
-         * как будто кнопка нажалась повторно. При отпущенной клавише
-         * KEY_DATA остаётся 0o377, КЛАД-2 видит «нет ввода». */
         input_repeat_held();
     }
 }
@@ -333,6 +316,7 @@ void bk_write_w(uint16_t addr, uint16_t value)
     bk_mem[addr]     = (uint8_t)(value & 0xFFu);
     bk_mem[addr + 1] = (uint8_t)((value >> 8) & 0xFFu);
     if (bk_write_hook) bk_write_hook(addr, value, 1);
+
 
     if (addr >= MEM_REGS) {
         switch (addr) {

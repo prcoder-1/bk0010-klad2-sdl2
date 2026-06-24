@@ -1054,6 +1054,27 @@ int pdp11_step(void)
 {
     if (cpu.halted) return -1;
 
+    /* Диагностика gravity-trigger на 0x322 (= 0o1442): главный
+     * dispatcher героя проверяет `cmp $10, (r4); bne 0x34a` и далее
+     * `bit $2000, *2(r4); beq 0x34a`. Логируем hero[0], *hero[2] и
+     * cpu.r[0] чтобы понять почему force ↓ не срабатывает после
+     * съедения клада. */
+    if (cpu.r[7] == 0001442u && getenv("KLAD2_GRAVITY_TRACE")) {
+        static unsigned cnt;
+        if (cnt < 40) {
+            uint16_t h0   = bk_read_w(014420u);
+            uint16_t h2   = bk_read_w(014422u);
+            uint16_t cell = bk_read_w(h2);
+            fprintf(stderr,
+                    "[grav] PC=%06o r0=%06o hero[0]=%06o hero[2]=%06o "
+                    "cell=%06o bit2000=%s match_h0_8=%s\n",
+                    cpu.r[7], cpu.r[0], h0, h2, cell,
+                    (cell & 0002000u) ? "SET" : "clear",
+                    (h0 == 010u) ? "Y" : "N");
+            cnt++;
+        }
+    }
+
     /* A/B-режим: при входе в любой адрес из g_ab_table запускаем
      * C-версию на копии, восстанавливаем, продолжаем интерпретацией. */
     ab_on_enter();

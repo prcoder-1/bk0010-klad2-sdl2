@@ -45,7 +45,13 @@ int input_init(void)
 {
     bk_mem[REG_KEY_STATE]     = 0;
     bk_mem[REG_KEY_STATE + 1] = 0;
-    bk_mem[REG_KEY_DATA]      = 0;
+    /* KEY_DATA = 0o377 при init: КЛАД-2 на 0x306 ищет код в таблице
+     * направлений @ 0o1732, где есть НУЛИ в позициях 2/3/6/7/8.
+     * Если KEY_DATA = 0 при старте — ложное совпадение даёт «уже нажата
+     * клавиша направления» → герой движется без ввода. 0o377 точно не
+     * в таблице (max 0o33). После первого реального нажатия KEY_DATA
+     * защёлкнется = последний код, как на реальной БК. */
+    bk_mem[REG_KEY_DATA]      = 0377;
     bk_mem[REG_KEY_DATA + 1]  = 0;
     bk_mem[SYS_LAST_KEY]      = 0;
     bk_mem[SYS_LAST_KEY_FLAG] = 0;
