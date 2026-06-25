@@ -571,6 +571,27 @@ enum {
  * -1000) координатам), загружаем новые координаты из таблицы @#17430
  * и сбрасываем таймер. Иначе ранний RTS.
  * ------------------------------------------------------------------- */
+static inline void psw_nz_w(uint16_t v);  /* forward; defined below */
+
+/* Один шаг отрисовки glyph в teleport_object: push r5/r1, inline R_14302,
+ * восстановление r3 (адрес следующего glyph-куска в шрифте), эмуляция
+ * PSW.C от 8-й итерации row-цикла внутри R_14302, pop r5/r1. */
+static void teleport_draw_glyph_step(void)
+{
+    uint8_t ch = bk_read_b(cpu.r[2]);
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[5]);
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[1]);
+    inline_draw_glyph(cpu.r[2], cpu.r[1]);
+    cpu.r[3] = (uint16_t)(KLAD2_FONT_BASE + (unsigned)ch * 16u + 16u);
+    uint16_t r1_prev = (uint16_t)(cpu.r[1] + 7u * SCREEN_ROW_BYTES);
+    uint16_t r1_last = (uint16_t)(r1_prev + SCREEN_ROW_BYTES);
+    if (r1_last < r1_prev) cpu.psw |= PSW_C;
+    else                    cpu.psw &= (uint16_t)~PSW_C;
+    cpu.r[1] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+    cpu.r[5] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
+    psw_nz_w(cpu.r[5]);
+}
+
 static void teleport_object(uint16_t cp_addr, uint16_t x_addr,
                             uint16_t table_dch_off, uint16_t table_dx_off,
                             uint16_t timer_addr)
@@ -601,23 +622,7 @@ static void teleport_object(uint16_t cp_addr, uint16_t x_addr,
     if ((int16_t)cpu.r[1] < 0) cpu.psw |= PSW_N;
     if (cpu.r[1] == 0)         cpu.psw |= PSW_Z;
 
-    /* jsr pc, R_14302 — первый glyph (push/pop r5/r1, эмуляция r3, PSW.C). */
-    {
-        uint8_t ch = bk_read_b(cpu.r[2]);
-        cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[5]);
-        cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[1]);
-        inline_draw_glyph(cpu.r[2], cpu.r[1]);
-        cpu.r[3] = (uint16_t)(KLAD2_FONT_BASE + (unsigned)ch * 16u + 16u);
-        uint16_t r1_prev = (uint16_t)(cpu.r[1] + 7u * SCREEN_ROW_BYTES);
-        uint16_t r1_last = (uint16_t)(r1_prev + SCREEN_ROW_BYTES);
-        if (r1_last < r1_prev) cpu.psw |= PSW_C;
-        else                    cpu.psw &= (uint16_t)~PSW_C;
-        cpu.r[1] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
-        cpu.r[5] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
-        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
-        if ((int16_t)cpu.r[5] < 0) cpu.psw |= PSW_N;
-        if (cpu.r[5] == 0)         cpu.psw |= PSW_Z;
-    }
+    teleport_draw_glyph_step();
 
     /* sub #100, r2. */
     {
@@ -642,23 +647,7 @@ static void teleport_object(uint16_t cp_addr, uint16_t x_addr,
         if (a < src) cpu.psw |= PSW_C;
     }
 
-    /* jsr pc, R_14302 — второй glyph. */
-    {
-        uint8_t ch = bk_read_b(cpu.r[2]);
-        cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[5]);
-        cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[1]);
-        inline_draw_glyph(cpu.r[2], cpu.r[1]);
-        cpu.r[3] = (uint16_t)(KLAD2_FONT_BASE + (unsigned)ch * 16u + 16u);
-        uint16_t r1_prev = (uint16_t)(cpu.r[1] + 7u * SCREEN_ROW_BYTES);
-        uint16_t r1_last = (uint16_t)(r1_prev + SCREEN_ROW_BYTES);
-        if (r1_last < r1_prev) cpu.psw |= PSW_C;
-        else                    cpu.psw &= (uint16_t)~PSW_C;
-        cpu.r[1] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
-        cpu.r[5] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
-        cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
-        if ((int16_t)cpu.r[5] < 0) cpu.psw |= PSW_N;
-        if (cpu.r[5] == 0)         cpu.psw |= PSW_Z;
-    }
+    teleport_draw_glyph_step();
 
     /* mov @#17430, r0; mov table_dch_off(r0), @#cp_addr;
      * mov table_dx_off(r0), @#x_addr; clr @#timer_addr. */
@@ -750,6 +739,13 @@ static inline void psw_nz_b(uint8_t v)
     cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
     if ((int8_t)v < 0) cpu.psw |= PSW_N;
     if (v == 0)        cpu.psw |= PSW_Z;
+}
+
+/* Шорткат: r[reg] = val + флаги (эквивалент `mov #val, rN`). */
+static inline void set_reg_w(unsigned reg, uint16_t val)
+{
+    cpu.r[reg] = val;
+    psw_nz_w(val);
 }
 
 /* Хелпер: ADD word — r = src + dst_old, PSW по PDP-11 add. */
@@ -940,7 +936,7 @@ void R_07462_main_e1(void)
     /* 0x0f6c: bit #100000, (r1). */
     v = bk_read_w(cpu.r[1]);
     {
-        uint16_t res = (uint16_t)(0100000u & v);
+        uint16_t res = (uint16_t)(CELL_CAN_RIGHT & v);
         cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
         if ((int16_t)res < 0) cpu.psw |= PSW_N;
         if (res == 0)        cpu.psw |= PSW_Z;
@@ -983,7 +979,7 @@ L_main_tail:
     {
         uint16_t cp = bk_read_w((uint16_t)(cpu.r[4] + 2u));
         uint16_t cell = bk_read_w(cp);
-        uint16_t res = (uint16_t)(0004000u & cell);
+        uint16_t res = (uint16_t)(CELL_FLAG_B11 & cell);
         cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
         if ((int16_t)res < 0) cpu.psw |= PSW_N;
         if (res == 0)        cpu.psw |= PSW_Z;
@@ -1033,7 +1029,7 @@ L_vertical:
     psw_nz_w(cpu.r[1]);
     {
         uint16_t cell = bk_read_w(cpu.r[1]);
-        uint16_t res = (uint16_t)(0010000u & cell);
+        uint16_t res = (uint16_t)(CELL_CAN_DOWN & cell);
         cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
         if ((int16_t)res < 0) cpu.psw |= PSW_N;
         if (res == 0)        cpu.psw |= PSW_Z;
@@ -1054,7 +1050,7 @@ L_try_left:
     psw_nz_w(cpu.r[1]);
     {
         uint16_t cell = bk_read_w(cpu.r[1]);
-        uint16_t res = (uint16_t)(0040000u & cell);
+        uint16_t res = (uint16_t)(CELL_CAN_LEFT & cell);
         cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
         if ((int16_t)res < 0) cpu.psw |= PSW_N;
         if (res == 0)        cpu.psw |= PSW_Z;
@@ -1086,7 +1082,7 @@ L_try_up:
     psw_nz_w(cpu.r[1]);
     {
         uint16_t cell = bk_read_w(cpu.r[1]);
-        uint16_t res = (uint16_t)(0020000u & cell);
+        uint16_t res = (uint16_t)(CELL_CAN_UP & cell);
         cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
         if ((int16_t)res < 0) cpu.psw |= PSW_N;
         if (res == 0)        cpu.psw |= PSW_Z;
@@ -1119,7 +1115,7 @@ L_idle:
     {
         uint16_t cp = bk_read_w((uint16_t)(cpu.r[4] + 2u));
         uint16_t cell = bk_read_w(cp);
-        uint16_t res = (uint16_t)(0002000u & cell);
+        uint16_t res = (uint16_t)(CELL_FLAG_B10 & cell);
         cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
         if ((int16_t)res < 0) cpu.psw |= PSW_N;
         if (res == 0)        cpu.psw |= PSW_Z;
@@ -1213,7 +1209,7 @@ void R_06632_main_e2(void)
     psw_nz_w(cpu.r[1]);
     {
         uint16_t cell = bk_read_w(cpu.r[1]);
-        uint16_t res = (uint16_t)(0100000u & cell);
+        uint16_t res = (uint16_t)(CELL_CAN_RIGHT & cell);
         cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
         if ((int16_t)res < 0) cpu.psw |= PSW_N;
         if (res == 0)        cpu.psw |= PSW_Z;
@@ -1244,7 +1240,7 @@ L_e2_main_tail:
     {
         uint16_t cp = bk_read_w((uint16_t)(cpu.r[4] + 2u));
         uint16_t cell = bk_read_w(cp);
-        uint16_t res = (uint16_t)(0004000u & cell);
+        uint16_t res = (uint16_t)(CELL_FLAG_B11 & cell);
         cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
         if ((int16_t)res < 0) cpu.psw |= PSW_N;
         if (res == 0)        cpu.psw |= PSW_Z;
@@ -1279,7 +1275,7 @@ L_e2_vertical:
     psw_nz_w(cpu.r[1]);
     {
         uint16_t cell = bk_read_w(cpu.r[1]);
-        uint16_t res = (uint16_t)(0010000u & cell);
+        uint16_t res = (uint16_t)(CELL_CAN_DOWN & cell);
         cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
         if ((int16_t)res < 0) cpu.psw |= PSW_N;
         if (res == 0)        cpu.psw |= PSW_Z;
@@ -1299,7 +1295,7 @@ L_e2_try_left:
     psw_nz_w(cpu.r[1]);
     {
         uint16_t cell = bk_read_w(cpu.r[1]);
-        uint16_t res = (uint16_t)(0040000u & cell);
+        uint16_t res = (uint16_t)(CELL_CAN_LEFT & cell);
         cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
         if ((int16_t)res < 0) cpu.psw |= PSW_N;
         if (res == 0)        cpu.psw |= PSW_Z;
@@ -1329,7 +1325,7 @@ L_e2_try_up:
     psw_nz_w(cpu.r[1]);
     {
         uint16_t cell = bk_read_w(cpu.r[1]);
-        uint16_t res = (uint16_t)(0020000u & cell);
+        uint16_t res = (uint16_t)(CELL_CAN_UP & cell);
         cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
         if ((int16_t)res < 0) cpu.psw |= PSW_N;
         if (res == 0)        cpu.psw |= PSW_Z;
@@ -1357,7 +1353,7 @@ L_e2_idle:
     {
         uint16_t cp = bk_read_w((uint16_t)(cpu.r[4] + 2u));
         uint16_t cell = bk_read_w(cp);
-        uint16_t res = (uint16_t)(0002000u & cell);
+        uint16_t res = (uint16_t)(CELL_FLAG_B10 & cell);
         cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
         if ((int16_t)res < 0) cpu.psw |= PSW_N;
         if (res == 0)        cpu.psw |= PSW_Z;
@@ -1472,7 +1468,7 @@ void R_15ce_clear_cell(void)
     /* bis #100000, 177776(r5) = bis #0o100000, mem[r5 - 2]. */
     {
         uint16_t a = (uint16_t)(r5 - 2u);
-        uint16_t v = (uint16_t)(bk_read_w(a) | 0100000u);
+        uint16_t v = (uint16_t)(bk_read_w(a) | CELL_CAN_RIGHT);
         bk_write_w(a, v);
         cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
         if ((int16_t)v < 0) cpu.psw |= PSW_N;
@@ -1482,7 +1478,7 @@ void R_15ce_clear_cell(void)
     /* bis #40000, 2(r5) = bis #0o40000, mem[r5 + 2]. */
     {
         uint16_t a = (uint16_t)(r5 + 2u);
-        uint16_t v = (uint16_t)(bk_read_w(a) | 0040000u);
+        uint16_t v = (uint16_t)(bk_read_w(a) | CELL_CAN_LEFT);
         bk_write_w(a, v);
         cpu.psw &= (uint16_t)~(PSW_N | PSW_Z | PSW_V);
         if ((int16_t)v < 0) cpu.psw |= PSW_N;
@@ -1656,8 +1652,6 @@ void R_0888_int_to_dec(void)
  *
  * Финальная 7-я hot функция (8483/6 сек). Не имеет зависимостей.
  *
- * Финальная 7-я hot функция (8483/6 сек). Не имеет зависимостей.
- *
  * ВАЖНО: C-замена R_02c6 НЕ эмулирует ~85 мкс задержки оригинала —
  * 256 sob'ов сворачиваются до доли микросекунды. Это означает,
  * что main loop крутится быстрее оригинала. Несколько попыток
@@ -1673,17 +1667,13 @@ void R_02c6_delay(void)
     bk_write_w(cpu.r[6], cpu.r[5]);
     psw_nz_w(cpu.r[5]);
 
-    /* mov #400, r5 */
-    cpu.r[5] = 0400u;
-    psw_nz_w(0400u);
-
-    /* Delay loop: tst r0; sob r5 — 256 итераций (без задержки в C). */
-    for (;;) {
-        psw_nz_w(cpu.r[0]);
-        cpu.r[5] = (uint16_t)(cpu.r[5] - 1u);
-        if (cpu.r[5] != 0) continue;
-        break;
-    }
+    /* mov #400, r5; loop tst r0; sob r5 (256 итераций).
+     * `tst r0` и `sob` устанавливают одни и те же флаги на каждой
+     * итерации (r0 не меняется внутри цикла); итоговый PSW — как от
+     * последнего `tst r0`. r5 в конце = 0 (sob выходит когда decrement
+     * даёт ноль). Раскрываем цикл константно. */
+    psw_nz_w(cpu.r[0]);
+    cpu.r[5] = 0;
 
     /* mov (sp)+, r5 */
     cpu.r[5] = bk_read_w(cpu.r[6]);
@@ -2130,8 +2120,7 @@ void R_1086_load_level(void)
     }
 
     /* mov #4, r5; sob loop: mov (r2)+, (r4)+ × 4. */
-    cpu.r[5] = 4;
-    psw_nz_w(4);
+    set_reg_w(5, 4);
     for (;;) {
         uint16_t v = bk_read_w(cpu.r[2]);
         cpu.r[2] = (uint16_t)(cpu.r[2] + 2u);
@@ -2154,8 +2143,7 @@ void R_1086_load_level(void)
     /* mov #14422, r5; mov #6, r1. */
     cpu.r[5] = 014422u;
     psw_nz_w(cpu.r[5]);
-    cpu.r[1] = 6;
-    psw_nz_w(6);
+    set_reg_w(1, 6);
 
     /* sob loop: mov (r2)+, (r5); r5 += 4; sob r1. */
     for (;;) {
@@ -2184,8 +2172,7 @@ void R_1086_load_level(void)
     R_1522_draw_map();
 
     /* mov #0, r4. */
-    cpu.r[4] = 0;
-    psw_nz_w(0);
+    set_reg_w(4, 0);
     /* mov r4, @#14420; @#14430; @#14440. */
     bk_write_w(014420u, cpu.r[4]);
     psw_nz_w(cpu.r[4]);
@@ -2491,8 +2478,7 @@ void R_1414_queue_handler(void)
     /* === Часть 2: проход по очереди. === */
 
     /* mov #11224, r5 */
-    cpu.r[5] = 011224u;
-    psw_nz_w(011224u);
+    set_reg_w(5, 011224u);
 
     for (;;) {
         /* tst (r5) */
@@ -2513,10 +2499,8 @@ void R_1414_queue_handler(void)
                 psw_nz_w(cpu.r[2]);
                 cpu.r[1] = bk_read_w((uint16_t)(cpu.r[5] + 2u));
                 psw_nz_w(cpu.r[1]);
-                cpu.r[4] = 4;
-                psw_nz_w(4);
-                cpu.r[3] = 017402u;
-                psw_nz_w(017402u);
+                set_reg_w(4, 4);
+                set_reg_w(3, 017402u);
 
                 /* Поиск типа в массиве 0o17402..0o17405. */
                 uint8_t type_byte = bk_read_b((uint16_t)(cpu.r[5] + 5u));
@@ -2816,11 +2800,9 @@ void R_07e6_inc_attempts(void)
 void R_03372_print_attempts(void)
 {
     /* mov #1, r2; mov #27 octal (= 23 dec), r1; emt 024. */
-    cpu.r[2] = 1;
-    psw_nz_w(1);
+    set_reg_w(2, 1);
 
-    cpu.r[1] = 027u;
-    psw_nz_w(027u);
+    set_reg_w(1, 027u);
 
     emt_dispatch(024u);
 
@@ -2846,12 +2828,10 @@ void R_03372_print_attempts(void)
     R_0888_int_to_dec();
 
     /* mov #2204 octal, r1. */
-    cpu.r[1] = 002204u;
-    psw_nz_w(002204u);
+    set_reg_w(1, 002204u);
 
     /* mov #1407 octal, r2. */
-    cpu.r[2] = 001407u;
-    psw_nz_w(001407u);
+    set_reg_w(2, 001407u);
 
     /* emt 020 — print string. */
     emt_dispatch(020u);
@@ -2897,12 +2877,10 @@ void R_0c2c_draw_hero(void)
     psw_nz_w(cpu.r[0]);
 
     /* mov #21640 (octal) = 0x4640, r2. */
-    cpu.r[2] = 021640u;
-    psw_nz_w(021640u);
+    set_reg_w(2, 021640u);
 
     /* mov #14420 octal = 0x1910, r4. */
-    cpu.r[4] = 014420u;
-    psw_nz_w(014420u);
+    set_reg_w(4, 014420u);
 
     /* jsr pc, R_14030 — push PC return (= 0x0c40), call. */
     cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
@@ -2928,16 +2906,13 @@ void R_0c2c_draw_hero(void)
     }
 
     /* mov #10 (octal) = 8 dec, r0. */
-    cpu.r[0] = 010u;
-    psw_nz_w(010u);
+    set_reg_w(0, 010u);
 
     /* mov #21640, r2. */
-    cpu.r[2] = 021640u;
-    psw_nz_w(021640u);
+    set_reg_w(2, 021640u);
 
     /* mov #14420, r4. */
-    cpu.r[4] = 014420u;
-    psw_nz_w(014420u);
+    set_reg_w(4, 014420u);
 
     /* jsr pc, R_14030 (second time для idle). */
     cpu.r[6] = (uint16_t)(cpu.r[6] - 2u);
@@ -2981,8 +2956,7 @@ void R_0c2c_draw_hero(void)
 void R_07aa_print_score(void)
 {
     /* mov #1, r2 — PSW.N=0, Z=0, V=0, C unchanged. */
-    cpu.r[2] = 1;
-    psw_nz_w(1);
+    set_reg_w(2, 1);
 
     /* clr r1 — PSW: N=0, Z=1, V=0, C=0. */
     cpu.r[1] = 0;
@@ -3035,12 +3009,10 @@ void R_07aa_print_score(void)
     R_0888_int_to_dec();
 
     /* mov #2154 octal, r1. */
-    cpu.r[1] = 002154u;
-    psw_nz_w(002154u);
+    set_reg_w(1, 002154u);
 
     /* mov #1437 octal, r2. */
-    cpu.r[2] = 001437u;
-    psw_nz_w(001437u);
+    set_reg_w(2, 001437u);
 
     /* emt 020 — print string at r1 with len/delim from r2. */
     emt_dispatch(020u);
@@ -3049,12 +3021,12 @@ void R_07aa_print_score(void)
 }
 
 /* Тело R_1558 без rts_pc (для inline-использования из R_1522). */
-static void R_1558_body(void)
+/* Общее ядро для R_1558/R_0a46/R_1558_draw_8rows: 8-итерационный
+ * цикл копирования word'ов из (r2)+ в SCREEN_DRAW_BASE+r1, шаг r1 на
+ * одну строку экрана. Финальное PSW.C — от последнего `add #100, r1`.
+ * Push/pop регистров делает caller (разный порядок в трёх вариантах). */
+static void copy_8_words_to_screen_rows(void)
 {
-    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[3]);
-    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[2]);
-    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[1]);
-    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[5]);
     cpu.r[5] = 0010u;
     psw_nz_w(cpu.r[5]);
     for (unsigned i = 0; i < 8; i++) {
@@ -3064,11 +3036,20 @@ static void R_1558_body(void)
         cpu.r[1] = (uint16_t)(cpu.r[1] + SCREEN_ROW_BYTES);
         cpu.r[5]--;
     }
-    {
-        uint16_t r1_prev = (uint16_t)(cpu.r[1] - SCREEN_ROW_BYTES);
-        if (cpu.r[1] < r1_prev) cpu.psw |= PSW_C;
-        else                     cpu.psw &= (uint16_t)~PSW_C;
-    }
+    uint16_t r1_prev = (uint16_t)(cpu.r[1] - SCREEN_ROW_BYTES);
+    if (cpu.r[1] < r1_prev) cpu.psw |= PSW_C;
+    else                     cpu.psw &= (uint16_t)~PSW_C;
+}
+
+static void R_1558_body(void)
+{
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[3]);
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[2]);
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[1]);
+    cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[5]);
+
+    copy_8_words_to_screen_rows();
+
     cpu.r[5] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
     cpu.r[1] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
     cpu.r[2] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
@@ -3184,25 +3165,7 @@ void R_0a46_draw_8rows_v2(void)
     cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[3]);
     cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[1]);
 
-    /* mov #10, r5. */
-    cpu.r[5] = 0010u;
-    psw_nz_w(cpu.r[5]);
-
-    /* Loop 8 раз. */
-    for (unsigned i = 0; i < 8; i++) {
-        uint16_t w = bk_read_w(cpu.r[2]);
-        bk_write_w((uint16_t)(SCREEN_DRAW_BASE + cpu.r[1]), w);
-        cpu.r[2] = (uint16_t)(cpu.r[2] + 2u);
-        cpu.r[1] = (uint16_t)(cpu.r[1] + SCREEN_ROW_BYTES);
-        cpu.r[5]--;
-    }
-
-    /* PSW.C от последнего add #100, r1. */
-    {
-        uint16_t r1_prev = (uint16_t)(cpu.r[1] - SCREEN_ROW_BYTES);
-        if (cpu.r[1] < r1_prev) cpu.psw |= PSW_C;
-        else                     cpu.psw &= (uint16_t)~PSW_C;
-    }
+    copy_8_words_to_screen_rows();
 
     /* pop r1, r3, r4, r5. */
     cpu.r[1] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);
@@ -3253,25 +3216,7 @@ void R_1558_draw_8rows(void)
     cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[1]);
     cpu.r[6] = (uint16_t)(cpu.r[6] - 2u); bk_write_w(cpu.r[6], cpu.r[5]);
 
-    /* mov #10, r5. */
-    cpu.r[5] = 0010u;
-    psw_nz_w(cpu.r[5]);
-
-    /* Loop 8 раз. */
-    for (unsigned i = 0; i < 8; i++) {
-        uint16_t w = bk_read_w(cpu.r[2]);
-        bk_write_w((uint16_t)(SCREEN_DRAW_BASE + cpu.r[1]), w);
-        cpu.r[2] = (uint16_t)(cpu.r[2] + 2u);
-        cpu.r[1] = (uint16_t)(cpu.r[1] + SCREEN_ROW_BYTES);
-        cpu.r[5]--;
-    }
-
-    /* PSW.C от последнего add #100, r1. */
-    {
-        uint16_t r1_prev = (uint16_t)(cpu.r[1] - SCREEN_ROW_BYTES);
-        if (cpu.r[1] < r1_prev) cpu.psw |= PSW_C;
-        else                     cpu.psw &= (uint16_t)~PSW_C;
-    }
+    copy_8_words_to_screen_rows();
 
     /* pop r5, r1, r2, r3. */
     cpu.r[5] = bk_read_w(cpu.r[6]); cpu.r[6] = (uint16_t)(cpu.r[6] + 2u);

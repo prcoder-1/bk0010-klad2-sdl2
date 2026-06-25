@@ -136,6 +136,25 @@ enum BK_V_SCROLL_BITS {
     V_SCROLL_EXT_MEMORY = 9 /* Включить расширенную видеоОЗУ */
 };
 
+/* ----- Биты проходимости в word'е тайла карты КЛАД-2 ----------------- *
+ *
+ * Каждая клетка карты — word: low byte = код тайла (вода/стена/клад…),
+ * high byte = биты проходимости. Эти биты ставит/проверяет game-logic
+ * (R_15ce_clear_cell, R_06632_main_e2, R_07462_main_e1 и т.д.).
+ *
+ * Имена для CAN_LEFT/CAN_RIGHT задокументированы в комментариях
+ * R_15ce_clear_cell: «bis #100000, -2(r5) — бит "можно вправо"»,
+ * «bis #40000, 2(r5) — бит "можно влево"». Остальные направления и
+ * биты — по аналогии с AI-проверками в main_e1/e2. */
+enum CELL_BITS {
+    CELL_CAN_RIGHT = 0100000u,  /* bit 15 */
+    CELL_CAN_LEFT  = 0040000u,  /* bit 14 */
+    CELL_CAN_UP    = 0020000u,  /* bit 13 */
+    CELL_CAN_DOWN  = 0010000u,  /* bit 12 */
+    CELL_FLAG_B11  = 0004000u,  /* bit 11 — gravity check в main loop 0x372 */
+    CELL_FLAG_B10  = 0002000u   /* bit 10 — gravity-trigger в main loop 0x322 */
+};
+
 /* ----- Константы экрана БК-0010 --------------------------------------- */
 enum BK_SCREEN {
     SCREEN_WORD_WIDTH      = 32,

@@ -134,6 +134,17 @@ void bk_reset(void)
 static uint32_t g_timer_accum;       /* счётчик «накопленных инструкций» */
 static int      g_timer_logged_once; /* однократный лог факта работы */
 
+/* Чтение/запись 16-битного регистра, хранящегося как пара байт. */
+static uint16_t reg16_get(uint16_t addr)
+{
+    return (uint16_t)(bk_mem[addr] | (bk_mem[addr + 1] << 8));
+}
+static void reg16_set(uint16_t addr, uint16_t value)
+{
+    bk_mem[addr]     = (uint8_t)(value & 0xff);
+    bk_mem[addr + 1] = (uint8_t)(value >> 8);
+}
+
 void bk_tick_timer(unsigned cpu_steps)
 {
     uint8_t csr = bk_mem[REG_TVE_CSR];
@@ -155,8 +166,7 @@ void bk_tick_timer(unsigned cpu_steps)
     if (!g_timer_logged_once && getenv("KLAD2_TIMER_LOG")) {
         fprintf(stderr,
                 "[таймер] RUN установлен, CSR=%03o, LIMIT=%06o\n",
-                csr, (unsigned)(bk_mem[REG_TVE_LIMIT]
-                              | (bk_mem[REG_TVE_LIMIT + 1] << 8)));
+                csr, reg16_get(REG_TVE_LIMIT));
         g_timer_logged_once = 1;
     }
 
@@ -164,14 +174,10 @@ void bk_tick_timer(unsigned cpu_steps)
     while (g_timer_accum >= threshold) {
         g_timer_accum -= threshold;
 
-        uint16_t cnt = (uint16_t)(bk_mem[REG_TVE_COUNT]
-                                | (bk_mem[REG_TVE_COUNT + 1] << 8));
+        uint16_t cnt = reg16_get(REG_TVE_COUNT);
         if (cnt == 0) {
             /* Перезагрузка из LIMIT либо остановка в однократном режиме. */
-            uint16_t lim = (uint16_t)(bk_mem[REG_TVE_LIMIT]
-                                    | (bk_mem[REG_TVE_LIMIT + 1] << 8));
-            bk_mem[REG_TVE_COUNT]     = (uint8_t)(lim & 0xff);
-            bk_mem[REG_TVE_COUNT + 1] = (uint8_t)(lim >> 8);
+            reg16_set(REG_TVE_COUNT, reg16_get(REG_TVE_LIMIT));
             /* Поднять флаг события. */
             bk_mem[REG_TVE_CSR] = (uint8_t)(csr | (1u << TVE_CSR_FL));
             if (csr & (1u << TVE_CSR_OS)) {
@@ -179,18 +185,27 @@ void bk_tick_timer(unsigned cpu_steps)
                 return;
             }
         } else {
-            cnt--;
-            bk_mem[REG_TVE_COUNT]     = (uint8_t)(cnt & 0xff);
-            bk_mem[REG_TVE_COUNT + 1] = (uint8_t)(cnt >> 8);
+            reg16_set(REG_TVE_COUNT, (uint16_t)(cnt - 1u));
         }
     }
 }
 
 /* ---------------- Перехватчики доступа к регистрам -------------------- */
 
+/* Ленивое кеширование env-флагов (горячие пути — каждый EXT_DEV write). */
+static int env_flag(const char *name)
+{
+    int *slot;
+    if      (strcmp(name, "KLAD2_EXTDEV_TRACE") == 0) { static int s = -1; slot = &s; }
+    else if (strcmp(name, "KLAD2_AUDIO_LOG")    == 0) { static int s = -1; slot = &s; }
+    else return getenv(name) != NULL;
+    if (*slot < 0) *slot = (getenv(name) != NULL);
+    return *slot;
+}
+
 static void on_write_ext_dev(uint16_t value)
 {
-    if (getenv("KLAD2_EXTDEV_TRACE")) {
+    if (env_flag("KLAD2_EXTDEV_TRACE")) {
         static unsigned cnt;
         if (cnt < 30) {
             fprintf(stderr, "[EXT_DEV] PC=%06o value=%06o\n",
@@ -209,7 +224,7 @@ static void on_write_ext_dev(uint16_t value)
     audio_speaker_set(toggle_state);
 
     /* Диагностика: лог любой первой и каждой 50-й записи + бит-стат. */
-    if (getenv("KLAD2_AUDIO_LOG")) {
+    if (env_flag("KLAD2_AUDIO_LOG")) {
         static unsigned total;
         static unsigned nonzero_total;
         static unsigned bit_writes[8];
@@ -241,13 +256,13 @@ static void on_write_ext_dev(uint16_t value)
 
 static void log_ext_dev_read(uint16_t addr)
 {
-    if (!getenv("KLAD2_AUDIO_LOG")) return;
+    if (!env_flag("KLAD2_AUDIO_LOG")) return;
     if ((addr & 0xFFFEu) != REG_EXT_DEV) return;
     static unsigned reads;
     reads++;
     if (reads < 4 || reads % 200 == 0) {
         fprintf(stderr, "[EXT_DEV] чтение #%u (значение %06o)\n",
-                reads, bk_mem[REG_EXT_DEV] | (bk_mem[REG_EXT_DEV+1] << 8));
+                reads, reg16_get(REG_EXT_DEV));
     }
 }
 
@@ -292,55 +307,56 @@ uint16_t bk_read_w(uint16_t addr)
 bk_write_hook_fn bk_write_hook;
 
 
+/* Общий перехватчик для записи в periph-регистр. Word-аргумент: для
+ * byte-записи caller сам собирает актуальное word через bk_read_w. */
+static void on_reg_write(uint16_t addr, uint16_t value, int word_write)
+{
+    switch (addr) {
+    case REG_EXT_DEV:
+        on_write_ext_dev(value);
+        break;
+    case REG_TVE_CSR:
+    case REG_TVE_LIMIT:
+        if (word_write && getenv("KLAD2_TIMER_LOG")) {
+            fprintf(stderr,
+                    "[таймер] запись слово %06o → %s\n",
+                    value, addr == REG_TVE_CSR ? "CSR" : "LIMIT");
+        }
+        break;
+    case REG_V_SCROLL:
+        if (word_write) {
+            fprintf(stderr,
+                    "[V_SCROLL] запись слово %06o (ADDRESS=%03o, "
+                    "EXT_MEMORY=%u)\n",
+                    value, value & 0xff, (value >> 9) & 1);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
 void bk_write_b(uint16_t addr, uint8_t value)
 {
     bk_mem[addr] = value;
     if (bk_write_hook) bk_write_hook(addr, value, 0);
 
     if (addr >= MEM_REGS) {
-        switch (addr & 0xFFFEu) {
-        case REG_EXT_DEV:
-            /* Учитываем, что байтовая запись могла попасть в чётный или
-             * нечётный байт; собираем актуальное слово и эмитим эффект. */
-            on_write_ext_dev(bk_read_w(REG_EXT_DEV));
-            break;
-        default:
-            break;
-        }
+        /* Байтовая запись могла попасть в любую половину word'а;
+         * передаём актуальное слово. */
+        uint16_t word_addr = (uint16_t)(addr & 0xFFFEu);
+        on_reg_write(word_addr, bk_read_w(word_addr), 0);
     }
 }
 
 void bk_write_w(uint16_t addr, uint16_t value)
 {
     addr &= 0xFFFEu;
-    bk_mem[addr]     = (uint8_t)(value & 0xFFu);
-    bk_mem[addr + 1] = (uint8_t)((value >> 8) & 0xFFu);
+    reg16_set(addr, value);
     if (bk_write_hook) bk_write_hook(addr, value, 1);
 
-
     if (addr >= MEM_REGS) {
-        switch (addr) {
-        case REG_EXT_DEV:
-            on_write_ext_dev(value);
-            break;
-        case REG_TVE_CSR:
-        case REG_TVE_LIMIT:
-            if (getenv("KLAD2_TIMER_LOG")) {
-                fprintf(stderr,
-                        "[таймер] запись слово %06o → %s\n",
-                        value,
-                        addr == REG_TVE_CSR ? "CSR" : "LIMIT");
-            }
-            break;
-        case REG_V_SCROLL:
-            fprintf(stderr,
-                    "[V_SCROLL] запись слово %06o (ADDRESS=%03o, "
-                    "EXT_MEMORY=%u)\n",
-                    value, value & 0xff, (value >> 9) & 1);
-            break;
-        default:
-            break;
-        }
+        on_reg_write(addr, value, 1);
     }
 }
 

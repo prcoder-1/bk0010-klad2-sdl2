@@ -404,20 +404,18 @@ int main(int argc, char **argv)
             return cpu.halted ? EXIT_FAILURE : EXIT_SUCCESS;
         }
     } else {
-        /* Ни BIN, ни --fast-start не указаны — пробуем встроенное
-         * состояние из src/klad2_initial.c (snapshot после релокатора). */
-        extern void klad2_load_builtin_state(void);
-        extern const uint16_t klad2_initial_regs[8];
-        extern const uint16_t klad2_initial_psw;
-        klad2_load_builtin_state();
-        for (int i = 0; i < 8; i++) cpu.r[i] = klad2_initial_regs[i];
-        cpu.psw    = klad2_initial_psw;
+        /* Ни BIN, ни --fast-start не указаны — прогоняем C-релокатор
+         * (см. src/klad2_relocator.c) поверх встроенного BIN. Фазы 1+2
+         * (lookup-таблица + копирование декомпрессора) выполняются в
+         * C, фаза 3 (распаковка кода) — интерпретатором с PC=0x7DC8. */
+        extern void klad2_run_relocator(void);
+        klad2_run_relocator();
         cpu.halted = 0;
         pdp11_set_emt_handler(emt_dispatch);
         pdp11_set_trace(trace);
         run_cpu = 1;
         fprintf(stderr,
-                "Запущено со встроенным состоянием: PC=%06o, SP=%06o\n",
+                "Запущено через C-релокатор: PC=%06o, SP=%06o\n",
                 cpu.r[7], cpu.r[6]);
     }
 
