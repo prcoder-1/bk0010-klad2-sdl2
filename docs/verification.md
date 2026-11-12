@@ -108,8 +108,10 @@ PSW-расхождения — все на `R_0efe` (двойной таймер
 make screenshots
 ```
 
-Цель использует `timeout -s INT` + `--max-steps` + `--dump-memory`
-+ `tools/bk_dump_to_ppm.py` + ImageMagick `convert` для PPM→PNG.
+Цель делает один прогон без окна (`SDL_VIDEODRIVER=dummy`) с записью
+кадров (`--record`, `--frames`) по сценарию `--auto-keys` и собирает из
+них PNG (`tools/bk_dump_to_ppm.py`) и `gameplay.gif`
+(`tools/frames_to_gif.py`). Нужен Pillow.
 
 ## Юнит-тесты декодера
 

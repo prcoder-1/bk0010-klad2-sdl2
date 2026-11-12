@@ -1,7 +1,6 @@
 # Сборка Linux/SDL2-порта КЛАД-2.
 #
-# Подробности по фазам — в плане ~/.claude/plans/curried-stargazing-cloud.md
-# Архитектура — в CLAUDE.md.
+# Описание порта — в README.md, A/B-верификация — в docs/verification.md.
 
 CC      ?= cc
 CSTD    ?= -std=c11
@@ -70,27 +69,28 @@ verify: $(BIN)
 	         END{printf "Расхождений: память=%d, регистры=%d, PSW=%d\n", \
 	             m+0, r+0, p+0}'
 
-# Воспроизвести три референсных скриншота через --auto-keys + дамп +
-# конвертер. Полезно для регрессионной проверки после изменений.
+# Картинки для README: один прогон без окна с записью кадров (--record)
+# по сценарию DEMO_KEYS, из него — три скриншота и GIF геймплея. Номера
+# кадров — при скорости по умолчанию (200 инстр/кадр). Нужен Pillow.
+# Сценарий: Enter → правила, «1» → уровень, шаг вправо на лестницу, подъём,
+# выстрел влево, проход по верхнему ярусу с кладами, падение в воду.
 SCREENS_DIR := docs/screens
+DEMO_KEYS   := 400:Enter,700:1,750:Right:30,790:Up:190,985:LShift,1030:Left:240
+DEMO_FRAMES := 1520
+DEMO_SHOTS  := title_screen:390 menu_rules:690 gameplay_level1:760
+GIF_RANGE   := --from 720 --to $(DEMO_FRAMES) --step 3
+
 screenshots: $(BIN)
 	@mkdir -p $(SCREENS_DIR)
-	@echo "=== Заставка ==="
-	timeout -s INT 8 ./$(BIN) --max-steps 200000 \
-	    --dump-memory /tmp/_title.bin >/dev/null 2>&1 || true
-	./tools/bk_dump_to_ppm.py /tmp/_title.bin /tmp/_title.ppm
-	convert /tmp/_title.ppm -scale 512x512 $(SCREENS_DIR)/title_screen.png
-	@echo "=== Меню правил ==="
-	timeout -s INT 10 ./$(BIN) --auto-keys "60:Enter" --max-steps 400000 \
-	    --dump-memory /tmp/_menu.bin >/dev/null 2>&1 || true
-	./tools/bk_dump_to_ppm.py /tmp/_menu.bin /tmp/_menu.ppm
-	convert /tmp/_menu.ppm -scale 512x512 $(SCREENS_DIR)/menu_rules.png
-	@echo "=== Уровень 1 ==="
-	timeout -s INT 15 ./$(BIN) --auto-keys "60:Enter,180:1" \
-	    --max-steps 800000 --dump-memory /tmp/_game.bin >/dev/null 2>&1 || true
-	./tools/bk_dump_to_ppm.py /tmp/_game.bin /tmp/_game.ppm
-	convert /tmp/_game.ppm -scale 512x512 $(SCREENS_DIR)/gameplay_level1.png
-	@rm -f /tmp/_title.* /tmp/_menu.* /tmp/_game.*
-	@echo "Скриншоты обновлены в $(SCREENS_DIR)/"
+	@set -e; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	echo "=== Запись $(DEMO_FRAMES) кадров (~25 с) ==="; \
+	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./$(BIN) --record "$$tmp" \
+	    --frames $(DEMO_FRAMES) --auto-keys "$(DEMO_KEYS)" >/dev/null 2>&1; \
+	for s in $(DEMO_SHOTS); do \
+	    ./tools/bk_dump_to_ppm.py "$$tmp/$$(printf %06d $${s#*:}).bin" \
+	        $(SCREENS_DIR)/$${s%%:*}.png --scale 2; \
+	done; \
+	./tools/frames_to_gif.py "$$tmp" $(SCREENS_DIR)/gameplay.gif $(GIF_RANGE)
+	@echo "Картинки обновлены в $(SCREENS_DIR)/"
 
 -include $(DEPS)

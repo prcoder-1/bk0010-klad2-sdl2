@@ -27,3 +27,9 @@ klad2_dump_*.bin
 *~
 .*.swp
 .DS_Store
+__pycache__/
+
+# Локальные заметки и настройки, не для публикации
+CLAUDE.md
+.claude/
+bk.ini

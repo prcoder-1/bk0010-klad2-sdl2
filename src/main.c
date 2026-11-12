@@ -40,12 +40,13 @@ static int g_scale = 3;
 
 /* Скриптовый ввод — для автоматизации профилирования gameplay
  * (KLAD2_JSR_PROFILE, --save-state) без интерактивного нажатия.
- * Формат флага --auto-keys: "FRAME:KEY[,FRAME:KEY,...]" где KEY —
- * одно из имён: Enter, Space, Left, Right, Up, Down, RShift, LShift,
- * Esc, либо одиночный ASCII-символ. На указанном кадре генерируется
- * SDL_KEYDOWN, через AUTO_HOLD_FRAMES кадров — SDL_KEYUP. */
+ * Формат флага --auto-keys: "FRAME:KEY[:HOLD][,FRAME:KEY[:HOLD],...]"
+ * где KEY — одно из имён: Enter, Space, Left, Right, Up, Down, RShift,
+ * LShift, Esc, либо одиночный ASCII-символ. На указанном кадре
+ * генерируется SDL_KEYDOWN, через HOLD кадров (по умолчанию
+ * AUTO_HOLD_FRAMES) — SDL_KEYUP. */
 enum { AUTO_KEYS_MAX = 64, AUTO_HOLD_FRAMES = 3 };
-struct auto_key { int frame; SDL_Keycode key; };
+struct auto_key { int frame; SDL_Keycode key; int hold; };
 static struct auto_key g_auto_keys[AUTO_KEYS_MAX];
 static int g_auto_keys_n;
 
@@ -79,6 +80,14 @@ static int parse_auto_keys(const char *spec)
         }
         *colon = 0;
         int frame = (int)strtol(tok, NULL, 0);
+        int hold = AUTO_HOLD_FRAMES;
+        /* colon + 2: одиночный символ ':' тоже допустим как KEY. */
+        char *hold_colon = colon[1] ? strchr(colon + 2, ':') : NULL;
+        if (hold_colon) {
+            *hold_colon = 0;
+            hold = (int)strtol(hold_colon + 1, NULL, 0);
+            if (hold < 1) hold = 1;
+        }
         SDL_Keycode k = parse_key_name(colon + 1);
         if (!k) {
             fprintf(stderr, "--auto-keys: неизвестная клавиша '%s'\n",
@@ -87,6 +96,7 @@ static int parse_auto_keys(const char *spec)
         }
         g_auto_keys[g_auto_keys_n].frame = frame;
         g_auto_keys[g_auto_keys_n].key   = k;
+        g_auto_keys[g_auto_keys_n].hold  = hold;
         g_auto_keys_n++;
     }
     return 0;
@@ -194,6 +204,29 @@ static int dump_memory(const char *path)
     return 0;
 }
 
+/* --record DIR: видеоОЗУ (16 КиБ, 0o40000..0o77777) каждого кадра в
+ * DIR/NNNNNN.bin — сырьё для tools/frames_to_gif.py. */
+enum { VIDEO_RAM_SIZE = 040000 };
+
+static int record_frame(const char *dir, int frame_no)
+{
+    char path[1024];
+    snprintf(path, sizeof path, "%s/%06d.bin", dir, frame_no);
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        fprintf(stderr, "record_frame: не могу открыть '%s'\n", path);
+        return -1;
+    }
+    size_t n = fwrite(bk_mem + MEM_VIDEO, 1, VIDEO_RAM_SIZE, f);
+    fclose(f);
+    if (n != VIDEO_RAM_SIZE) {
+        fprintf(stderr, "record_frame: записано %zu вместо %u\n",
+                n, (unsigned)VIDEO_RAM_SIZE);
+        return -1;
+    }
+    return 0;
+}
+
 /* ---------------- Snapshot для мгновенного старта -------------------- *
  *
  * PIC-релокатор КЛАД-2 (адреса 0x01DA..~0x027F) тратит ~50000 шагов
@@ -289,6 +322,8 @@ int main(int argc, char **argv)
     const char *dump_path = NULL;
     const char *snap_save_path = NULL;
     const char *snap_load_path = NULL;
+    const char *record_dir = NULL;
+    int exit_frame = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--trace") == 0) {
@@ -318,13 +353,18 @@ int main(int argc, char **argv)
                 return EXIT_FAILURE;
             }
             g_scale = s;
+        } else if (strcmp(argv[i], "--record") == 0 && i + 1 < argc) {
+            record_dir = argv[++i];
+        } else if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
+            exit_frame = (int)strtol(argv[++i], NULL, 0);
         } else if (argv[i][0] == '-') {
             fprintf(stderr,
                     "Неизвестный флаг: %s\n"
                     "Использование: %s [--trace] [--max-steps N] "
                     "[--rom path/to/mon.rom] [--speed N] [--scale N (1..4)] "
                     "[--dump-memory path] [--save-state path] "
-                    "[--fast-start path] [путь/к/BIN]\n",
+                    "[--fast-start path] [--auto-keys F:K,...] "
+                    "[--record dir] [--frames N] [путь/к/BIN]\n",
                     argv[i], argv[0]);
             return EXIT_FAILURE;
         } else {
@@ -425,15 +465,16 @@ int main(int argc, char **argv)
     int fullscreen = 0;
     int frame_no = 0;
     while (running) {
+        if (exit_frame > 0 && frame_no >= exit_frame) break;
         /* Скриптовый ввод: на нужных кадрах инъецируем KEYDOWN, через
-         * AUTO_HOLD_FRAMES — KEYUP. Сравниваем frame_no точно — каждый
+         * hold кадров — KEYUP. Сравниваем frame_no точно — каждый
          * запланированный шаг сработает ровно один раз. */
         for (int i = 0; i < g_auto_keys_n; i++) {
             if (g_auto_keys[i].frame == frame_no) {
                 inject_key(g_auto_keys[i].key, 1);
                 fprintf(stderr, "[auto-keys] кадр %d: down %s\n",
                         frame_no, SDL_GetKeyName(g_auto_keys[i].key));
-            } else if (g_auto_keys[i].frame + AUTO_HOLD_FRAMES == frame_no) {
+            } else if (g_auto_keys[i].frame + g_auto_keys[i].hold == frame_no) {
                 inject_key(g_auto_keys[i].key, 0);
             }
         }
@@ -490,6 +531,8 @@ int main(int argc, char **argv)
             int n = pdp11_run_n(steps);
             bk_tick_timer((unsigned)n);
             audio_flush();
+            if (record_dir && record_frame(record_dir, frame_no) != 0)
+                record_dir = NULL;
             if (max_steps > 0) {
                 max_steps -= n;
                 if (max_steps <= 0) {

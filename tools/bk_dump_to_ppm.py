@@ -33,9 +33,17 @@ ROW_BYTES  = 64       # 256 пикс × 2 бита / 8 бит = 64 байт
 PALETTE = [(0, 0, 0), (0, 0, 255), (0, 255, 0), (255, 0, 0)]
 
 
+def video_slice(dump_bytes):
+    """Видеоокно из дампа: 64 КиБ (--dump-memory, F12) или 16 КиБ
+    одного кадра (--record)."""
+    if len(dump_bytes) == VIDEO_SIZE:
+        return dump_bytes
+    return dump_bytes[VIDEO_BASE:VIDEO_BASE + VIDEO_SIZE]
+
+
 def decode_video(dump_bytes):
-    """bk_mem[64K] → RGB-байты 256×256×3."""
-    video = dump_bytes[VIDEO_BASE:VIDEO_BASE + VIDEO_SIZE]
+    """bk_mem[64K] или кадр 16K → RGB-байты 256×256×3."""
+    video = video_slice(dump_bytes)
     out = bytearray(SCREEN_W * SCREEN_H * 3)
     pos = 0
     for y in range(SCREEN_H):
@@ -77,7 +85,7 @@ def write_png_via_pillow(path, rgb_bytes, w, h, scale=1):
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("input", help="дамп памяти БК (64 КиБ)")
+    p.add_argument("input", help="дамп памяти БК (64 КиБ) или кадр --record (16 КиБ)")
     p.add_argument("output", help="путь вывода (.ppm или .png)")
     p.add_argument("--scale", type=int, default=1,
                    help="увеличение PNG в N раз (только PNG-вывод)")
@@ -85,9 +93,10 @@ def main():
 
     with open(args.input, "rb") as f:
         dump = f.read()
-    if len(dump) < VIDEO_BASE + VIDEO_SIZE:
-        print(f"input: ожидалось >= {VIDEO_BASE + VIDEO_SIZE} байт, "
-              f"прочитано {len(dump)}", file=sys.stderr)
+    if len(dump) != VIDEO_SIZE and len(dump) < VIDEO_BASE + VIDEO_SIZE:
+        print(f"input: ожидалось {VIDEO_SIZE} или >= "
+              f"{VIDEO_BASE + VIDEO_SIZE} байт, прочитано {len(dump)}",
+              file=sys.stderr)
         sys.exit(1)
 
     rgb = decode_video(dump)
